@@ -280,12 +280,12 @@ def run_bot():
     else:
         session = "Off-hours (SKIP)"
 
-    # Weekend check
-    if now.weekday() == 5:
-        alert.send("Saturday - markets closed! Bot 2 resumes Monday 5am SGT")
+    # Weekend check - silent return, no alert spam (Railway runs 24/7)
+    if now.weekday() == 5:  # Saturday
+        log.info("Saturday - markets closed, skipping silently")
         return
-    if now.weekday() == 6 and hour < 5:
-        alert.send("Sunday early - markets open at 5am SGT")
+    if now.weekday() == 6 and hour < 5:  # Sunday before 5am SGT
+        log.info("Sunday early - markets not open yet, skipping silently")
         return
 
     # Login
