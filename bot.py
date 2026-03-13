@@ -1,4 +1,4 @@
-"""
+="""
 OANDA Trading Bot - Demo Account 2
 ====================================
 Strategy: Mean Reversion
@@ -340,31 +340,12 @@ def run_bot(state=None):
     with open(trade_log, "w") as f:
         json.dump(today, f, indent=2)
 
-    # Daily loss protection DISABLED for demo testing
-    # Bot keeps trading regardless of daily loss
-    if realized_pnl <= -settings["max_daily_loss"]:
-        log.warning("Daily loss limit reached $" + str(abs(round(realized_pnl, 2))) + " but continuing (demo mode)")
-        alert.send(
-            "⚠️ DEMO 2 Daily loss $" + str(abs(round(realized_pnl, 2))) + " USD\n"
-            "Limit: $" + str(settings["max_daily_loss"]) + " USD\n"
-            "Continuing for demo testing! 🧪"
-        )
+    # Daily loss protection REMOVED for demo testing
 
-    # Consecutive loss warning (not stopping - demo testing mode)
+    # Consecutive loss protection REMOVED for demo testing
     consec = today.get("consec_losses", 0)
-    if consec >= settings.get("max_consec_losses", 2):
-        log.warning("Consecutive losses: " + str(consec) + " but continuing (demo mode)")
 
-    # Max trades
-    if today["trades"] >= settings["max_trades_day"]:
-        alert.send(
-            "✅ DEMO 2 Max trades reached!\n"
-            "Trades: " + str(today["trades"]) + "/" + str(settings["max_trades_day"]) + "\n"
-            "Realized: $" + str(round(realized_pnl, 2)) + " USD " + pnl_emoji + "\n"
-            "= $" + str(round(pl_sgd, 2)) + " SGD\n"
-            "New trades resume tomorrow!"
-        )
-        return
+    # Max trades check REMOVED for demo testing
 
     # Off hours - just monitor
     if not good_session:
