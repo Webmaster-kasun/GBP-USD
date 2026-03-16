@@ -158,14 +158,14 @@ class SignalEngine:
         if at_lower_bb:
             bull += 2
             reasons.append("✅ M15 AT Lower BB (" + str(round(current, 5)) + "≤" + str(round(bb_lower, 5)) + ")")
-        elif near_lower:
+        elif near_lower:   # elif = no double count
             bull += 1
             reasons.append("M15 near Lower BB")
 
         if at_upper_bb:
             bear += 2
             reasons.append("✅ M15 AT Upper BB (" + str(round(current, 5)) + "≥" + str(round(bb_upper, 5)) + ")")
-        elif near_upper:
+        elif near_upper:   # elif = no double count
             bear += 1
             reasons.append("M15 near Upper BB")
 
@@ -193,17 +193,17 @@ class SignalEngine:
         stoch = self._stochastic(m15_closes, m15_highs, m15_lows, 14)
         log.info(self.asset + " M15 Stoch=" + str(round(stoch, 1)))
 
-        if stoch <= 15:     # Deep oversold
+        if stoch <= 15:     # Deep oversold only
             bull += 1
             reasons.append("✅ M15 Stoch deep oversold=" + str(round(stoch, 0)))
-        elif stoch <= 25:
+        elif stoch <= 25:   # elif = no double count
             bull += 1
             reasons.append("M15 Stoch oversold=" + str(round(stoch, 0)))
 
-        if stoch >= 85:     # Deep overbought
+        if stoch >= 85:     # Deep overbought only
             bear += 1
             reasons.append("✅ M15 Stoch deep overbought=" + str(round(stoch, 0)))
-        elif stoch >= 75:
+        elif stoch >= 75:   # elif = no double count
             bear += 1
             reasons.append("M15 Stoch overbought=" + str(round(stoch, 0)))
 
@@ -268,9 +268,9 @@ class SignalEngine:
 
         reason_str = " | ".join(reasons) if reasons else "No signals"
 
-        if bull >= 4 and bull > bear:
+        if bull >= 3 and bull > bear:
             return min(bull, 8), "BUY", reason_str
-        elif bear >= 4 and bear > bull:
+        elif bear >= 3 and bear > bull:
             return min(bear, 8), "SELL", reason_str
         return max(bull, bear), "NONE", reason_str
 
