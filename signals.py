@@ -1,288 +1,176 @@
 """
-OANDA — M1 Ultra-Scalp Bot
-====================================
-Target: SGD ~58 profit per trade | SGD ~35 max loss | 15-min max
+Signal Engine — M1 Ultra-Scalp
+================================
+Score 3/3 required to trade:
+  L1: M5 EMA8 vs EMA21 — direction bias
+  L2: M5 RSI(7) snap zone — <40 BUY / >60 SELL  (relaxed from 38/62)
+  L3: M1 trigger candle  — engulf or pin-bar
 
-Trade specs:
-  Size:    86,000 units
-  SL:      3 pips => SGD ~34.8
-  TP:      5 pips => SGD ~58.1
-  Max dur: 15 minutes hard close
-  3 pairs x TP = SGD ~174 per session
-
-Telegram alerts ONLY on events:
-  - New trade placed
-  - TP hit
-  - SL hit
-  - 15-min force close
-  - News block (1x per pair per session)
-  - EOD close
-  - Login failed
+Relaxed thresholds vs previous version so trades actually fire.
 """
 
-import os, json, time, logging, requests
+import os, requests, logging
 from datetime import datetime
 import pytz
 
-from signals         import SignalEngine
-from oanda_trader    import OandaTrader
-from telegram_alert  import TelegramAlert
-from calendar_filter import EconomicCalendar as CalendarFilter
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger(__name__)
 
-sg_tz   = pytz.timezone("Asia/Singapore")
-signals = SignalEngine()
+class SafeFilter(logging.Filter):
+    def __init__(self):
+        self.api_key = os.environ.get("OANDA_API_KEY","")
+    def filter(self, record):
+        if self.api_key and self.api_key in str(record.getMessage()):
+            record.msg = record.msg.replace(self.api_key,"***")
+        return True
+log.addFilter(SafeFilter())
 
-TRADE_SIZE   = 86000
-SL_PIPS      = 3
-TP_PIPS      = 5
-MAX_DURATION = 15
-USD_SGD      = 1.35
+class SignalEngine:
+    def __init__(self):
+        self.api_key    = os.environ.get("OANDA_API_KEY","")
+        self.account_id = os.environ.get("OANDA_ACCOUNT_ID","")
+        self.base_url   = "https://api-fxpractice.oanda.com"
+        self.headers    = {"Authorization":"Bearer "+self.api_key}
 
-ASSETS = {
-    "AUD_USD": {"instrument":"AUD_USD","asset":"AUDUSD","emoji":"🦘","max_score":3,"pip":0.0001,"precision":5,"stop_pips":SL_PIPS,"tp_pips":TP_PIPS,"session_start":6,"session_end":11},
-    "EUR_GBP": {"instrument":"EUR_GBP","asset":"EURGBP","emoji":"🇪🇺","max_score":3,"pip":0.0001,"precision":5,"stop_pips":SL_PIPS,"tp_pips":TP_PIPS,"session_start":14,"session_end":19},
-    "EUR_USD": {"instrument":"EUR_USD","asset":"EURUSD","emoji":"🇪🇺💵","max_score":3,"pip":0.0001,"precision":5,"stop_pips":SL_PIPS,"tp_pips":TP_PIPS,"session_start":14,"session_end":18},
-}
+    INSTR_MAP = {
+        "AUDUSD": "AUD_USD",
+        "EURGBP": "EUR_GBP",
+        "EURUSD": "EUR_USD",
+    }
 
-DEFAULT_SETTINGS = {"signal_threshold":3,"demo_mode":True,"max_spread_pips":1.2}
-
-def load_settings():
-    try:
-        with open("settings.json") as f:
-            DEFAULT_SETTINGS.update(json.load(f))
-    except FileNotFoundError:
-        with open("settings.json","w") as f:
-            json.dump(DEFAULT_SETTINGS, f, indent=2)
-    return DEFAULT_SETTINGS
-
-def is_in_session(hour, cfg): return cfg["session_start"] <= hour < cfg["session_end"]
-
-def set_cooldown(today, name):
-    if "cooldowns" not in today: today["cooldowns"] = {}
-    today["cooldowns"][name] = datetime.now(sg_tz).isoformat()
-    log.info(name + " cooldown 30 min")
-
-def in_cooldown(today, name):
-    cd = today.get("cooldowns",{}).get(name)
-    if not cd: return False
-    try:
-        elapsed = (datetime.now(sg_tz) - datetime.fromisoformat(cd).replace(tzinfo=sg_tz)).total_seconds()/60
-        return elapsed < 30
-    except: return False
-
-def detect_sl_tp_hits(today, trader, trade_log, alert):
-    if "open_times" not in today: return
-    for name in list(today["open_times"].keys()):
-        if trader.get_position(name): continue
-        try:
-            url  = trader.base_url+"/v3/accounts/"+trader.account_id+"/trades?state=CLOSED&instrument="+name+"&count=1"
-            data = requests.get(url, headers=trader.headers, timeout=10).json().get("trades",[])
-            if data:
-                pnl     = float(data[0].get("realizedPL","0"))
-                pnl_sgd = round(pnl * USD_SGD, 2)
-                emoji   = ASSETS.get(name,{}).get("emoji","")
-                wins    = today.get("wins",0)
-                losses  = today.get("losses",0)
-                if pnl < 0:
-                    set_cooldown(today, name)
-                    today["losses"]        = losses + 1
-                    today["consec_losses"] = today.get("consec_losses",0) + 1
-                    # ── ALERT: SL hit ──
-                    alert.send(
-                        "🔴 SL HIT\n"
-                        +emoji+" "+name+"\n"
-                        "Loss:  $"+str(round(pnl,2))+" USD\n"
-                        "     ≈ SGD -"+str(abs(pnl_sgd))+"\n"
-                        "⏳ Cooldown 30 min\n"
-                        "W/L: "+str(wins)+"/"+str(today["losses"])
-                    )
-                    log.info(name+" SL hit SGD -"+str(abs(pnl_sgd)))
-                else:
-                    today["wins"]          = wins + 1
-                    today["consec_losses"] = 0
-                    # ── ALERT: TP hit ──
-                    alert.send(
-                        "✅ TP HIT\n"
-                        +emoji+" "+name+"\n"
-                        "Profit: $+"+str(round(pnl,2))+" USD\n"
-                        "      ≈ SGD +"+str(pnl_sgd)+"\n"
-                        "W/L: "+str(today["wins"])+"/"+str(losses)
-                    )
-                    log.info(name+" TP hit SGD +"+str(pnl_sgd))
-        except Exception as e:
-            log.warning("SL/TP detect error "+name+": "+str(e))
-        del today["open_times"][name]
-        with open(trade_log,"w") as f: json.dump(today, f, indent=2)
-
-def run_bot():
-    settings = load_settings()
-    now      = datetime.now(sg_tz)
-    hour     = now.hour
-    alert    = TelegramAlert()
-    calendar = CalendarFilter()
-
-    log.info("Scan at "+now.strftime("%H:%M:%S SGT"))
-
-    if now.weekday() == 5: log.info("Saturday — silent"); return
-    if now.weekday() == 6 and hour < 5: log.info("Sunday early — silent"); return
-
-    active = [n for n,c in ASSETS.items() if is_in_session(hour,c)]
-    if not active: log.info("No active sessions at "+str(hour)+"h SGT"); return
-
-    trader = OandaTrader(demo=settings["demo_mode"])
-    if not trader.login():
-        alert.send("❌ Login FAILED!")   # ── ALERT: login fail ──
-        return
-
-    current_balance = trader.get_balance()
-
-    trade_log = "trades_"+now.strftime("%Y%m%d")+".json"
-    try:
-        with open(trade_log) as f: today = json.load(f)
-    except FileNotFoundError:
-        today = {"trades":0,"start_balance":current_balance,"wins":0,"losses":0,"consec_losses":0,"cooldowns":{},"open_times":{},"news_alerted":{}}
-        with open(trade_log,"w") as f: json.dump(today, f, indent=2)
-        log.info("New day! Balance: $"+str(round(current_balance,2)))
-
-    realized_pnl = round(current_balance - today.get("start_balance", current_balance), 2)
-    pl_sgd       = round(realized_pnl * USD_SGD, 2)
-    pnl_emoji    = "✅" if realized_pnl >= 0 else "🔴"
-
-    detect_sl_tp_hits(today, trader, trade_log, alert)
-
-    # ── EOD close ────────────────────────────────────────────────────
-    if hour == 22 and now.minute >= 55:
-        closed = []
-        for name in ASSETS:
-            if trader.get_position(name):
-                trader.close_position(name)
-                closed.append(name)
-        if closed:
-            # ── ALERT: EOD ──
-            alert.send(
-                "🔔 EOD Close\n"
-                "Closed: "+", ".join(closed)+"\n"
-                "Today:  $"+str(realized_pnl)+" USD "+pnl_emoji+"\n"
-                "      = SGD "+str(pl_sgd)+"\n"
-                "W/L: "+str(today.get("wins",0))+"/"+str(today.get("losses",0))
-            )
-        return
-
-    # ── 15-MIN HARD CLOSE ────────────────────────────────────────────
-    for name in ASSETS:
-        pos = trader.get_position(name)
-        if not pos: continue
-        try:
-            tid      = pos.get("id") or pos.get("tradeID")
-            t_url    = trader.base_url+"/v3/accounts/"+trader.account_id+"/trades/"+str(tid)
-            open_str = requests.get(t_url, headers=trader.headers, timeout=10).json()["trade"]["openTime"]
-            open_utc = datetime.fromisoformat(open_str.replace("Z","+00:00"))
-            mins     = (datetime.now(pytz.utc) - open_utc).total_seconds() / 60
-            if mins >= MAX_DURATION:
-                pnl     = trader.check_pnl(pos)
-                pnl_sgd = round(pnl * USD_SGD, 2)
-                trader.close_position(name)
-                if name in today.get("open_times",{}):
-                    del today["open_times"][name]
-                    with open(trade_log,"w") as f: json.dump(today, f, indent=2)
-                # ── ALERT: 15-min force close ──
-                alert.send(
-                    "⏰ 15-MIN TIMEOUT\n"
-                    +ASSETS[name]["emoji"]+" "+name+"\n"
-                    "Closed at "+str(round(mins,1))+" min\n"
-                    "PnL: $"+str(round(pnl,2))+" USD "+("✅" if pnl>=0 else "🔴")+"\n"
-                    "   ≈ SGD "+str(pnl_sgd)
-                )
-                log.info(name+" force-closed "+str(round(mins,1))+" min SGD "+str(pnl_sgd))
-        except Exception as e:
-            log.warning("Duration check "+name+": "+str(e))
-
-    # ── SCAN + TRADE ──────────────────────────────────────────────────
-    threshold = settings.get("signal_threshold", 3)
-
-    for name, cfg in ASSETS.items():
-        if not is_in_session(hour, cfg):
-            log.info(name+": off-session"); continue
-
-        pos = trader.get_position(name)
-        if pos:
-            pnl_sgd = round(trader.check_pnl(pos) * USD_SGD, 2)
-            dirn    = "BUY" if int(float(pos.get("long",{}).get("units",0)))>0 else "SELL"
-            log.info(name+": "+dirn+" open SGD "+str(pnl_sgd))
-            continue
-
-        if in_cooldown(today, name):
-            cd = today.get("cooldowns",{}).get(name,"")
+    def _fetch_candles(self, instrument, granularity, count=60):
+        url    = self.base_url+"/v3/instruments/"+instrument+"/candles"
+        params = {"count":str(count),"granularity":granularity,"price":"M"}
+        for attempt in range(3):
             try:
-                remaining = int(30-(datetime.now(sg_tz)-datetime.fromisoformat(cd).replace(tzinfo=sg_tz)).total_seconds()/60)
-            except: remaining = "?"
-            log.info(name+": cooldown "+str(remaining)+"min remaining"); continue
+                r = requests.get(url, headers=self.headers, params=params, timeout=10)
+                if r.status_code == 200:
+                    c = [x for x in r.json()["candles"] if x["complete"]]
+                    return (
+                        [float(x["mid"]["c"]) for x in c],
+                        [float(x["mid"]["h"]) for x in c],
+                        [float(x["mid"]["l"]) for x in c],
+                        [float(x["mid"]["o"]) for x in c],
+                    )
+                log.warning("Candle attempt "+str(attempt+1)+" failed: "+str(r.status_code))
+            except Exception as e:
+                log.warning("Candle error: "+str(e))
+        return [], [], [], []
 
-        price, bid, ask = trader.get_price(name)
-        if price is None: log.warning(name+": price error"); continue
+    def analyze(self, asset="AUDUSD"):
+        instr = self.INSTR_MAP.get(asset, asset[:3]+"_"+asset[3:])
+        return self._scalp_m1(instr, asset)
 
-        spread = (ask - bid) / cfg["pip"]
-        if spread > settings.get("max_spread_pips", 1.2):
-            log.info(name+": spread "+str(round(spread,1))+"p — skip"); continue
+    def _scalp_m1(self, instrument, asset):
+        """
+        3-layer scalp signal on M1 charts.
 
-        news_active, news_reason = calendar.is_news_time(name)
-        if news_active:
-            # Alert once per news event per pair (avoid repeat every 1 min)
-            alert_key = name+"_news_"+now.strftime("%Y%m%d%H")
-            if not today.get("news_alerted",{}).get(alert_key):
-                if "news_alerted" not in today: today["news_alerted"] = {}
-                today["news_alerted"][alert_key] = True
-                with open(trade_log,"w") as f: json.dump(today, f, indent=2)
-                # ── ALERT: news block ──
-                alert.send("⚠️ NEWS BLOCK\n"+cfg["emoji"]+" "+name+"\n"+news_reason+"\nSkipping trade this hour")
-            log.info(name+": news block — "+news_reason); continue
+        L1 — M5 EMA8 vs EMA21 (trend bias, wider frame)
+             Threshold: 0.00003 gap (relaxed — fires more often)
 
-        score, direction, details = signals.analyze(asset=cfg["asset"])
-        if score < threshold or direction == "NONE":
-            log.info(name+": "+str(score)+"/3 no setup — silent"); continue
+        L2 — M5 RSI(7) snap zone
+             BUY  if RSI < 40  (was 38 — too tight, rarely hit)
+             SELL if RSI > 60  (was 62 — too tight)
 
-        # ── Place trade ──────────────────────────────────────────────
-        sl_sgd = round(TRADE_SIZE * SL_PIPS * cfg["pip"] * USD_SGD, 2)
-        tp_sgd = round(TRADE_SIZE * TP_PIPS * cfg["pip"] * USD_SGD, 2)
+        L3 — M1 most-recent complete candle pattern
+             Bullish engulf OR bullish pin-bar  → BUY trigger
+             Bearish engulf OR bearish pin-bar  → SELL trigger
+             Pin-bar: wick > 55% of range (relaxed from 60%)
+                      body < 40% of range (relaxed from 35%)
+        """
+        reasons = []
+        bull = bear = 0
 
-        result = trader.place_order(instrument=name, direction=direction, size=TRADE_SIZE,
-                                    stop_distance=SL_PIPS, limit_distance=TP_PIPS)
-        if result["success"]:
-            today["trades"] = today.get("trades",0)+1
-            if "open_times" not in today: today["open_times"] = {}
-            today["open_times"][name] = now.isoformat()
-            with open(trade_log,"w") as f: json.dump(today, f, indent=2)
-            price, _, _ = trader.get_price(name)
-            # ── ALERT: new trade ──
-            alert.send(
-                "🔄 NEW TRADE!\n"
-                +cfg["emoji"]+" "+name+"\n"
-                "Direction: "+direction+"\n"
-                "Score:     3/3 ✅\n"
-                "Size:      86,000 units\n"
-                "Entry:     "+str(round(price, cfg["precision"]))+"\n"
-                "SL:        "+str(SL_PIPS)+" pips ≈ SGD "+str(sl_sgd)+"\n"
-                "TP:        "+str(TP_PIPS)+" pips ≈ SGD "+str(tp_sgd)+"\n"
-                "Max Time:  15 min\n"
-                "Spread:    "+str(round(spread,1))+"p\n"
-                "Signals:   "+details
-            )
-            log.info(name+": "+direction+" placed! SGD SL="+str(sl_sgd)+" TP="+str(tp_sgd))
+        # ── L1: M5 EMA bias ──────────────────────────────────────────
+        m5_c, _, _, _ = self._fetch_candles(instrument, "M5", 60)
+        if len(m5_c) < 22:
+            return 0, "NONE", "Not enough M5 data ("+str(len(m5_c))+" candles)"
+
+        ema8  = self._ema(m5_c, 8)[-1]
+        ema21 = self._ema(m5_c, 21)[-1]
+
+        # Relaxed gap: 0.00003 instead of 0.00005
+        bull_bias = ema8 > ema21 * 1.00003
+        bear_bias = ema8 < ema21 * 0.99997
+
+        if bull_bias:
+            bull += 1
+            reasons.append("✅ M5 EMA bullish")
+        elif bear_bias:
+            bear += 1
+            reasons.append("✅ M5 EMA bearish")
         else:
-            set_cooldown(today, name)
-            with open(trade_log,"w") as f: json.dump(today, f, indent=2)
-            log.warning(name+": order failed — cooldown set")
+            return 0, "NONE", "M5 EMA flat — no bias"
 
-if __name__ == "__main__":
-    log.info("🚀 Ultra-Scalp | SL=3pip(SGD35) TP=5pip(SGD58) | 15min max")
-    log.info("Telegram: event-based only (no scan spam)")
-    log.info("AUD/USD 6-11am | EUR/GBP 2-7pm | EUR/USD 2-6pm SGT")
-    while True:
-        try:
-            run_bot()
-        except Exception as e:
-            log.error("Bot error: "+str(e))
-        time.sleep(60)
+        # ── L2: M5 RSI(7) snap ───────────────────────────────────────
+        rsi = self._rsi(m5_c, 7)
+
+        if bull_bias and rsi <= 40:       # relaxed from 38
+            bull += 1
+            reasons.append("✅ RSI7="+str(round(rsi,1))+" oversold")
+        elif bear_bias and rsi >= 60:     # relaxed from 62
+            bear += 1
+            reasons.append("✅ RSI7="+str(round(rsi,1))+" overbought")
+        else:
+            reasons.append("RSI7="+str(round(rsi,1))+" not in zone")
+            return max(bull,bear), "NONE", " | ".join(reasons)
+
+        # ── L3: M1 trigger candle ────────────────────────────────────
+        m1_c, m1_h, m1_l, m1_o = self._fetch_candles(instrument, "M1", 10)
+        if len(m1_c) < 3:
+            return max(bull,bear), "NONE", " | ".join(reasons)+" | Not enough M1 data"
+
+        c1 = m1_c[-1]; c2 = m1_c[-2]
+        o1 = m1_o[-1]; o2 = m1_o[-2]
+        h1 = m1_h[-1]; l1 = m1_l[-1]
+
+        body1 = abs(c1 - o1)
+        rng1  = max(h1 - l1, 0.00001)
+
+        # Bullish engulf: green candle body covers prior red candle body
+        bull_engulf = (c1 > o1) and (c2 < o2) and (c1 >= o2) and (o1 <= c2)
+        # Bullish pin: lower wick > 55%, body < 40%
+        lower_wick  = min(o1,c1) - l1
+        bull_pin    = (c1 >= o1) and (lower_wick/rng1 > 0.55) and (body1/rng1 < 0.40)
+
+        # Bearish engulf: red candle body covers prior green candle body
+        bear_engulf = (c1 < o1) and (c2 > o2) and (c1 <= o2) and (o1 >= c2)
+        # Bearish pin: upper wick > 55%, body < 40%
+        upper_wick  = h1 - max(o1,c1)
+        bear_pin    = (c1 <= o1) and (upper_wick/rng1 > 0.55) and (body1/rng1 < 0.40)
+
+        if bull_bias and (bull_engulf or bull_pin):
+            bull += 1
+            reasons.append("✅ M1 bullish "+("engulf" if bull_engulf else "pin-bar"))
+        elif bear_bias and (bear_engulf or bear_pin):
+            bear += 1
+            reasons.append("✅ M1 bearish "+("engulf" if bear_engulf else "pin-bar"))
+        else:
+            reasons.append("No M1 trigger (engulf/pin-bar)")
+            return max(bull,bear), "NONE", " | ".join(reasons)
+
+        if bull >= 3: return 3, "BUY",  " | ".join(reasons)
+        if bear >= 3: return 3, "SELL", " | ".join(reasons)
+        return max(bull,bear), "NONE", " | ".join(reasons)
+
+    # ── math helpers ─────────────────────────────────────────────────
+    def _rsi(self, closes, period=14):
+        gains, losses = [], []
+        for i in range(1, len(closes)):
+            d = closes[i]-closes[i-1]
+            gains.append(max(d,0))
+            losses.append(max(-d,0))
+        if len(gains) < period: return 50
+        ag = sum(gains[-period:])/period
+        al = sum(losses[-period:])/period
+        if al == 0: return 100
+        return 100-(100/(1+ag/al))
+
+    def _ema(self, data, period):
+        if not data: return [0.0]
+        if len(data) < period: return [sum(data)/len(data)]*len(data)
+        seed = sum(data[:period])/period
+        emas = [seed]*period
+        mult = 2/(period+1)
+        for p in data[period:]:
+            emas.append((p-emas[-1])*mult+emas[-1])
+        return emas
