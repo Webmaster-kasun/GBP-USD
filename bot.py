@@ -1,19 +1,20 @@
 """
-OANDA Demo 2 — M1 Ultra-Scalp Bot
+OANDA — M1 Ultra-Scalp Bot
 ====================================
-SGD 100 profit target | SGD 35 max loss | 15-min max trade duration
+Target: SGD ~58 profit per trade | SGD ~35 max loss | 15-min max
 
-ALL PAIRS → M1 Ultra-Scalp Strategy
+ALL PAIRS → M1 Ultra-Scalp
   AUD/USD → Asian  6am-11am SGT
   EUR/GBP → London 2pm-7pm  SGT
   EUR/USD → London 2pm-6pm  SGT
 
 Trade specs:
-  Size:    50,000 units (0.50 lots)
-  SL:      5 pips  => ~SGD 33.75
-  TP:      15 pips => ~SGD 101.25
-  R:R:     3.0 : 1
+  Size:    86,000 units (0.86 lots)
+  SL:      3 pips => SGD ~34.8
+  TP:      5 pips => SGD ~58.1
+  R:R:     1.67:1
   Max dur: 15 minutes hard close
+  All 3 pairs hit TP => SGD ~174
 """
 
 import os, json, time, logging, requests
@@ -31,10 +32,10 @@ log = logging.getLogger(__name__)
 sg_tz   = pytz.timezone("Asia/Singapore")
 signals = SignalEngine()
 
-TRADE_SIZE   = 50000
-SL_PIPS      = 5
-TP_PIPS      = 15
-MAX_DURATION = 15   # minutes
+TRADE_SIZE   = 86000
+SL_PIPS      = 3
+TP_PIPS      = 5
+MAX_DURATION = 15
 USD_SGD      = 1.35
 
 ASSETS = {
@@ -120,6 +121,7 @@ def run_bot():
     except FileNotFoundError:
         today = {"trades":0,"start_balance":current_balance,"wins":0,"losses":0,"consec_losses":0,"cooldowns":{},"open_times":{}}
         with open(trade_log,"w") as f: json.dump(today, f, indent=2)
+        log.info("New day! Balance: $"+str(round(current_balance,2)))
 
     start_balance = today.get("start_balance", current_balance)
     realized_pnl  = round(current_balance - start_balance, 2)
@@ -177,13 +179,13 @@ def run_bot():
             pnl     = trader.check_pnl(pos)
             pnl_sgd = round(pnl * USD_SGD, 2)
             dirn    = "BUY" if int(float(pos.get("long",{}).get("units",0)))>0 else "SELL"
-            scan_results.append(cfg["emoji"]+" "+name+": "+dirn+" open "+("📈" if pnl>=0 else "📉")+" $"+str(round(pnl,2))+" (SGD "+str(pnl_sgd)+")")
+            scan_results.append(cfg["emoji"]+" "+name+": "+dirn+" open "+("📈" if pnl>=0 else "📉")+" SGD "+str(pnl_sgd))
             continue
 
         if in_cooldown(today, name):
             cd = today.get("cooldowns",{}).get(name,"")
             try:
-                remaining = int(30 - (datetime.now(sg_tz)-datetime.fromisoformat(cd).replace(tzinfo=sg_tz)).total_seconds()/60)
+                remaining = int(30-(datetime.now(sg_tz)-datetime.fromisoformat(cd).replace(tzinfo=sg_tz)).total_seconds()/60)
             except: remaining = "?"
             scan_results.append(cfg["emoji"]+" "+name+": ⏳ cooldown "+str(remaining)+"min"); continue
 
@@ -202,10 +204,8 @@ def run_bot():
             scan_results.append(cfg["emoji"]+" "+name+": "+str(score)+"/3 no setup"); continue
 
         # Place trade
-        sl_usd  = round(TRADE_SIZE * SL_PIPS  * cfg["pip"], 2)
-        tp_usd  = round(TRADE_SIZE * TP_PIPS  * cfg["pip"], 2)
-        sl_sgd  = round(sl_usd * USD_SGD, 2)
-        tp_sgd  = round(tp_usd * USD_SGD, 2)
+        sl_sgd = round(TRADE_SIZE * SL_PIPS * cfg["pip"] * USD_SGD, 2)
+        tp_sgd = round(TRADE_SIZE * TP_PIPS * cfg["pip"] * USD_SGD, 2)
 
         result = trader.place_order(instrument=name, direction=direction, size=TRADE_SIZE,
                                     stop_distance=SL_PIPS, limit_distance=TP_PIPS)
@@ -217,51 +217,55 @@ def run_bot():
             price, _, _ = trader.get_price(name)
             alert.send(
                 "🔄 NEW TRADE!\n"+cfg["emoji"]+" "+name+"\n"
-                "Direction: "+direction+"\nScore:     "+str(score)+"/3 ✅\n"
-                "Size:      0.50 lots (50,000 units)\n"
+                "Direction: "+direction+"\nScore:     3/3 ✅\n"
+                "Size:      86,000 units\n"
                 "Entry:     "+str(round(price, cfg["precision"]))+"\n"
-                "Stop Loss: "+str(SL_PIPS)+"p = $"+str(sl_usd)+" ≈ SGD "+str(sl_sgd)+"\n"
-                "Take Prof: "+str(TP_PIPS)+"p = $"+str(tp_usd)+" ≈ SGD "+str(tp_sgd)+"\n"
-                "Max Time:  "+str(MAX_DURATION)+" min then force-close\n"
-                "Spread:    "+str(round(spread,1))+"p\nSignals:   "+details
+                "SL:        "+str(SL_PIPS)+" pips ≈ SGD "+str(sl_sgd)+"\n"
+                "TP:        "+str(TP_PIPS)+" pips ≈ SGD "+str(tp_sgd)+"\n"
+                "Max Time:  15 min\nSpread:    "+str(round(spread,1))+"p\n"
+                "Signals:   "+details
             )
-            scan_results.append(cfg["emoji"]+" "+name+": "+direction+" ✅ PLACED!")
+            scan_results.append(cfg["emoji"]+" "+name+": "+direction+" 3/3 ✅ PLACED!")
         else:
             set_cooldown(today, name)
             with open(trade_log,"w") as f: json.dump(today, f, indent=2)
             scan_results.append(cfg["emoji"]+" "+name+": order failed")
 
-    # Summary
+    # ── SUMMARY ──────────────────────────────────────────────────────
+    wins   = today.get("wins",0)
+    losses = today.get("losses",0)
+
     if 6 <= hour < 11:    session = "Asian 🇯🇵"
     elif 14 <= hour < 18: session = "London 🇬🇧"
     elif 18 <= hour < 23: session = "NY 🇺🇸"
     else:                 session = "Off-hours"
 
-    target_msg = ("🎯 SGD TARGET HIT! "+str(round(pl_sgd,0)) if pl_sgd>=100
-                  else ("Profit SGD +"+str(pl_sgd) if pl_sgd>0
-                  else ("Loss   SGD -"+str(abs(pl_sgd)) if pl_sgd<0
-                  else "Waiting...")))
+    target_msg = ("🎯 SGD TARGET HIT! "+str(round(pl_sgd,0)) if pl_sgd >= 58
+                  else ("Profit SGD +"+str(pl_sgd) if pl_sgd > 0
+                  else ("Loss   SGD -"+str(abs(pl_sgd)) if pl_sgd < 0
+                  else "Waiting for signal...")))
 
     alert.send(
         "🔄 Scan | ULTRA-SCALP\n"
-        "Time:     "+now.strftime("%H:%M SGT")+" | "+session+"\n"
-        "Balance:  $"+str(round(current_balance,2))+" USD\n"
-        "Realized: $"+str(realized_pnl)+" "+pnl_emoji+" = SGD "+str(pl_sgd)+"\n"
-        "Open PnL: $"+str(open_pnl)+"\n"
+        "Time:    "+now.strftime("%H:%M SGT")+" | "+session+"\n"
+        "Balance: $"+str(round(current_balance,2))+" USD\n"
+        "Today:   $"+str(realized_pnl)+" "+pnl_emoji+" = SGD "+str(pl_sgd)+"\n"
+        "Open:    $"+str(open_pnl)+"\n"
         +target_msg+"\n"
-        "Trades: "+str(today.get("trades",0))+" | W/L: "+str(today.get("wins",0))+"/"+str(today.get("losses",0))+"\n"
-        "Config: 50k units | SL=5p | TP=15p | ≤15min\n"
+        "Trades: "+str(today.get("trades",0))+" | W/L: "+str(wins)+"/"+str(losses)+"\n"
+        "Config: 86k units | SL=3p(SGD35) | TP=5p(SGD58) | ≤15min\n"
+        "Target: 3x TP = SGD 174/session\n"
         "─────────────────────────\n"
         +"\n".join(scan_results)
     )
 
 if __name__ == "__main__":
-    log.info("🚀 Ultra-Scalp Bot | SGD 100 TP / SGD 35 SL / 15min max")
+    log.info("🚀 Ultra-Scalp | SL=3pip(SGD35) TP=5pip(SGD58) | 15min max")
+    log.info("3 pairs x SGD58 = SGD174 target per session")
     log.info("AUD/USD 6-11am | EUR/GBP 2-7pm | EUR/USD 2-6pm SGT")
     while True:
         try:
             run_bot()
         except Exception as e:
             log.error("Bot error: "+str(e))
-        log.info("Sleeping 1 min...")
         time.sleep(60)
