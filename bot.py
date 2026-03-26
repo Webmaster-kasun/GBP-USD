@@ -1,24 +1,22 @@
 """
 OANDA — M1 Ultra-Scalp Bot
 ====================================
-Target: SGD ~58 profit per trade | SGD ~35 max loss | 15-min max
+$10,000 demo | 4 pairs | 86,000 units
 
 Trade specs:
   Size:    86,000 units
-  SL:      3 pips => SGD ~34.8
-  TP:      5 pips => SGD ~58.1
+  SL:      3 pips => SGD ~34.83 (USD/JPY ~SGD 23)
+  TP:      5 pips => SGD ~58.05 (USD/JPY ~SGD 39)
   Max dur: 15 minutes hard close
-  3 pairs x TP = SGD ~174 per session
+  4 pairs all TP = SGD ~232 per session
 
-Telegram: EVENT-ONLY — no scan spam
-  Alerts: new trade | TP hit | SL hit | 15-min close | news | EOD | login fail
-  Silent: no signal | off-session | cooldown | spread skip
+Sessions SGT:
+  AUD/USD  : 6am-11am + 2pm-10pm
+  EUR/USD  : 2pm-10pm  (extended — NY session added)
+  GBP/USD  : 2pm-10pm  (new pair)
+  USD/JPY  : 6am-11am + 8pm-10pm (new pair)
 
-Fixes vs previous:
-  - settings.json signal_threshold 4→3 (was blocking ALL trades)
-  - settings.json max_spread_pips 2.0→1.2 (too wide for scalp)
-  - 15-min timer now uses get_open_trade_id() for reliable trade ID
-  - EUR/GBP spread gate raised to 1.8 pip (OANDA demo spread often >1.2)
+Telegram: EVENT-ONLY
 """
 
 import os, json, time, logging, requests
@@ -39,34 +37,41 @@ signals = SignalEngine()
 TRADE_SIZE   = 86000
 SL_PIPS      = 3
 TP_PIPS      = 5
-MAX_DURATION = 15   # minutes
+MAX_DURATION = 15
 USD_SGD      = 1.35
 
 ASSETS = {
     "AUD_USD": {
         "instrument":"AUD_USD","asset":"AUDUSD","emoji":"🦘",
-        "max_score":3,"pip":0.0001,"precision":5,
+        "pip":0.0001,"precision":5,
         "stop_pips":SL_PIPS,"tp_pips":TP_PIPS,
-        "session_start":6,"session_end":11,
-        "max_spread":1.2,   # liquid Asian pair — tight spread ok
-    },
-    "EUR_GBP": {
-        "instrument":"EUR_GBP","asset":"EURGBP","emoji":"🇪🇺",
-        "max_score":3,"pip":0.0001,"precision":5,
-        "stop_pips":SL_PIPS,"tp_pips":TP_PIPS,
-        "session_start":14,"session_end":19,
-        "max_spread":1.8,   # OANDA demo spread often 1.3-1.8 for EUR/GBP
+        "max_spread":1.2,
+        "sessions":[(6,11),(14,22)],   # Asian + NY
     },
     "EUR_USD": {
         "instrument":"EUR_USD","asset":"EURUSD","emoji":"🇪🇺💵",
-        "max_score":3,"pip":0.0001,"precision":5,
+        "pip":0.0001,"precision":5,
         "stop_pips":SL_PIPS,"tp_pips":TP_PIPS,
-        "session_start":14,"session_end":18,
-        "max_spread":1.2,   # most liquid pair — tight spread ok
+        "max_spread":1.2,
+        "sessions":[(14,22)],          # London + full NY
+    },
+    "GBP_USD": {
+        "instrument":"GBP_USD","asset":"GBPUSD","emoji":"💷",
+        "pip":0.0001,"precision":5,
+        "stop_pips":SL_PIPS,"tp_pips":TP_PIPS,
+        "max_spread":1.5,              # GBP slightly wider spread
+        "sessions":[(14,22)],          # London + NY
+    },
+    "USD_JPY": {
+        "instrument":"USD_JPY","asset":"USDJPY","emoji":"🇯🇵",
+        "pip":0.01,"precision":3,      # JPY pip = 0.01
+        "stop_pips":SL_PIPS,"tp_pips":TP_PIPS,
+        "max_spread":1.5,
+        "sessions":[(6,11),(20,22)],   # Asian + NY late
     },
 }
 
-DEFAULT_SETTINGS = {"signal_threshold":3,"demo_mode":True,"max_spread_pips":1.2}
+DEFAULT_SETTINGS = {"signal_threshold":3,"demo_mode":True}
 
 def load_settings():
     try:
@@ -77,7 +82,8 @@ def load_settings():
             json.dump(DEFAULT_SETTINGS, f, indent=2)
     return DEFAULT_SETTINGS
 
-def is_in_session(hour, cfg): return cfg["session_start"] <= hour < cfg["session_end"]
+def is_in_session(hour, cfg):
+    return any(s <= hour < e for s, e in cfg["sessions"])
 
 def set_cooldown(today, name):
     if "cooldowns" not in today: today["cooldowns"] = {}
@@ -184,19 +190,15 @@ def run_bot():
         return
 
     # ── 15-MIN HARD CLOSE ────────────────────────────────────────────
-    # Uses get_open_trade_id() which queries /trades endpoint directly
-    # (position endpoint has no trade ID at top level — fixed)
     for name in ASSETS:
         pos = trader.get_position(name)
         if not pos: continue
         try:
             trade_id, open_str = trader.get_open_trade_id(name)
-            if not trade_id or not open_str:
-                log.warning(name+": could not get trade ID for 15-min check")
-                continue
+            if not trade_id or not open_str: continue
             open_utc = datetime.fromisoformat(open_str.replace("Z","+00:00"))
             mins     = (datetime.now(pytz.utc) - open_utc).total_seconds() / 60
-            log.info(name+": trade open "+str(round(mins,1))+" min")
+            log.info(name+": open "+str(round(mins,1))+" min")
             if mins >= MAX_DURATION:
                 pnl     = trader.check_pnl(pos)
                 pnl_sgd = round(pnl * USD_SGD, 2)
@@ -211,7 +213,6 @@ def run_bot():
                     "PnL: $"+str(round(pnl,2))+" USD "+("✅" if pnl>=0 else "🔴")+"\n"
                     "   ≈ SGD "+str(pnl_sgd)
                 )
-                log.info(name+" force-closed "+str(round(mins,1))+" min SGD "+str(pnl_sgd))
         except Exception as e:
             log.warning("Duration check "+name+": "+str(e))
 
@@ -239,11 +240,9 @@ def run_bot():
         price, bid, ask = trader.get_price(name)
         if price is None: log.warning(name+": price error"); continue
 
-        # Per-pair spread gate (EUR/GBP gets wider allowance)
-        max_spread = cfg.get("max_spread", settings.get("max_spread_pips", 1.2))
-        spread     = (ask - bid) / cfg["pip"]
-        if spread > max_spread:
-            log.info(name+": spread "+str(round(spread,1))+"p > "+str(max_spread)+"p — skip"); continue
+        spread = (ask - bid) / cfg["pip"]
+        if spread > cfg["max_spread"]:
+            log.info(name+": spread "+str(round(spread,2))+"p > "+str(cfg["max_spread"])+"p skip"); continue
 
         news_active, news_reason = calendar.is_news_time(name)
         if news_active:
@@ -259,7 +258,7 @@ def run_bot():
         log.info(name+": score="+str(score)+"/3 dir="+direction+" | "+details)
 
         if score < threshold or direction == "NONE":
-            log.info(name+": no setup — waiting silently"); continue
+            log.info(name+": no setup — waiting"); continue
 
         # ── Place trade ──────────────────────────────────────────────
         sl_sgd = round(TRADE_SIZE * SL_PIPS * cfg["pip"] * USD_SGD, 2)
@@ -283,7 +282,7 @@ def run_bot():
                 "SL:        "+str(SL_PIPS)+" pips ≈ SGD "+str(sl_sgd)+"\n"
                 "TP:        "+str(TP_PIPS)+" pips ≈ SGD "+str(tp_sgd)+"\n"
                 "Max Time:  15 min\n"
-                "Spread:    "+str(round(spread,1))+"p\n"
+                "Spread:    "+str(round(spread,2))+"p\n"
                 "Signals:   "+details
             )
             log.info(name+": PLACED "+direction+" SGD SL="+str(sl_sgd)+" TP="+str(tp_sgd))
@@ -295,9 +294,9 @@ def run_bot():
     log.info("Scan complete. Next in 60s.")
 
 if __name__ == "__main__":
-    log.info("🚀 Ultra-Scalp | SL=3pip(SGD35) TP=5pip(SGD58) | 15min max")
-    log.info("Telegram: event-based ONLY — no scan spam")
-    log.info("AUD/USD 6-11am | EUR/GBP 2-7pm | EUR/USD 2-6pm SGT")
+    log.info("🚀 Ultra-Scalp | 4 pairs | SL=3pip TP=5pip | 15min max")
+    log.info("AUD/USD: 6-11am+2-10pm | EUR/USD: 2-10pm | GBP/USD: 2-10pm | USD/JPY: 6-11am+8-10pm")
+    log.info("Best case: 4 pairs x SGD58 = SGD232/session")
     while True:
         try:
             run_bot()
