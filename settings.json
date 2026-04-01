@@ -1,5 +1,5 @@
 {
-  "signal_threshold": 3,
+  "signal_threshold": 4,
   "demo_mode": true,
-  "max_spread_pips": 1.2
+  "max_spread_pips": 1.5
 }
