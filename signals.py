@@ -5,7 +5,7 @@ Supports: EUR/USD, GBP/USD
 Score 4/4 required:
   L0: M15 EMA8 vs EMA21 — direction must match M15 momentum (no counter-trend scalps)
   L1: M5  EMA8 vs EMA21 bias
-  L2: M5  RSI(7) snap <40 BUY / >60 SELL
+  L2: M5  RSI(9) <=30 BUY / >=70 SELL + strong momentum (delta>=1.0) + price vs EMA50
   L3: M1  trigger candle — engulf or pin-bar
   L4: H1  EMA200 hard block — price must be above EMA200 for BUY, below for SELL
        (L4 is a veto/block, not a score point — direction="NONE" if violated)
@@ -108,16 +108,53 @@ class SignalEngine:
             reasons.append("M5 EMA disagrees with M15 — skip")
             return max(bull,bear), "NONE", " | ".join(reasons)
 
-        # ── L2: M5 RSI(7) ────────────────────────────────────────────
-        rsi = self._rsi(m5_c, 7)
-        if bull_bias and rsi <= 40:
+        # ── L2: M5 RSI(9) — tight zones + strong momentum + EMA50 ──
+        # BUY:  RSI(9) <= 30 AND rising strongly (delta >= 1.0 pt)
+        #       AND price above M5 EMA50 (not buying into deep downtrend)
+        #       AND bullish M5 candle (close > open on last bar)
+        # SELL: RSI(9) >= 70 AND falling strongly (delta >= 1.0 pt)
+        #       AND price below M5 EMA50
+        #       AND bearish M5 candle (close < open on last bar)
+        RSI_MOMENTUM_THRESHOLD = 1.0
+
+        rsi_vals    = self._rsi_series(m5_c, 9)
+        rsi         = rsi_vals[-1]
+        rsi_prev    = rsi_vals[-2] if len(rsi_vals) >= 2 else rsi
+        rsi_delta   = rsi - rsi_prev          # positive = rising, negative = falling
+
+        ema50       = self._ema(m5_c, 50)[-1]
+        price_now   = m5_c[-1]
+        last_open   = m5_c[-2] if len(m5_c) >= 2 else m5_c[-1]  # previous close as proxy
+        # Bullish/bearish confirmation from last completed M5 candle
+        # m5_c[-1] is last complete close, m5_c[-2] is prior close
+        m5_bull_candle = m5_c[-1] > m5_c[-2]
+        m5_bear_candle = m5_c[-1] < m5_c[-2]
+
+        price_above_ema50 = price_now > ema50
+        price_below_ema50 = price_now < ema50
+
+        if (bull_bias
+                and rsi <= 30
+                and rsi_delta >= RSI_MOMENTUM_THRESHOLD
+                and price_above_ema50
+                and m5_bull_candle):
             bull += 1
-            reasons.append("✅ RSI="+str(round(rsi,1))+" oversold")
-        elif bear_bias and rsi >= 60:
+            reasons.append("✅ RSI="+str(round(rsi,1))+" oversold+Δ"+str(round(rsi_delta,1))+" above EMA50 bull-candle")
+        elif (bear_bias
+                and rsi >= 70
+                and rsi_delta <= -RSI_MOMENTUM_THRESHOLD
+                and price_below_ema50
+                and m5_bear_candle):
             bear += 1
-            reasons.append("✅ RSI="+str(round(rsi,1))+" overbought")
+            reasons.append("✅ RSI="+str(round(rsi,1))+" overbought+Δ"+str(round(rsi_delta,1))+" below EMA50 bear-candle")
         else:
-            reasons.append("RSI="+str(round(rsi,1))+" not in zone")
+            reasons.append(
+                "RSI="+str(round(rsi,1))
+                +" Δ="+str(round(rsi_delta,2))
+                +" EMA50="+str(round(ema50,5))
+                +" price="+str(round(price_now,5))
+                +" — L2 fail"
+            )
             return max(bull,bear), "NONE", " | ".join(reasons)
 
         # ── L3: M1 trigger candle ─────────────────────────────────────
@@ -180,6 +217,28 @@ class SignalEngine:
             reasons.append("✅ H1 EMA200="+str(round(h1_ema200,5))+" confirms "+raw_dir)
 
         return max(bull,bear), raw_dir, " | ".join(reasons)
+
+    def _rsi_series(self, closes, period=9):
+        """Returns list of RSI values (same length as closes) for momentum check."""
+        if len(closes) < period + 2:
+            return [50.0, 50.0]
+        gains, losses = [], []
+        for i in range(1, len(closes)):
+            d = closes[i] - closes[i-1]
+            gains.append(max(d, 0))
+            losses.append(max(-d, 0))
+        # Seed with simple average
+        ag = sum(gains[:period]) / period
+        al = sum(losses[:period]) / period
+        rsi_list = []
+        for i in range(period, len(gains)+1):
+            if i == period:
+                pass  # already seeded above
+            else:
+                ag = (ag * (period-1) + gains[i-1]) / period
+                al = (al * (period-1) + losses[i-1]) / period
+            rsi_list.append(100 - (100 / (1 + ag/al)) if al != 0 else 100.0)
+        return rsi_list if len(rsi_list) >= 2 else [50.0, 50.0]
 
     def _rsi(self, closes, period=14):
         gains, losses = [], []
