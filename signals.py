@@ -1,11 +1,14 @@
 """
 Signal Engine — M1 Ultra-Scalp
 ================================
-Supports: AUD/USD, EUR/USD, GBP/USD, USD/JPY
-Score 3/3 required:
-  L1: M5 EMA8 vs EMA21 bias
-  L2: M5 RSI(7) snap <40 BUY / >60 SELL
-  L3: M1 trigger candle — engulf or pin-bar
+Supports: EUR/USD, GBP/USD
+Score 4/4 required:
+  L0: M15 EMA8 vs EMA21 — direction must match M15 momentum (no counter-trend scalps)
+  L1: M5  EMA8 vs EMA21 bias
+  L2: M5  RSI(7) snap <40 BUY / >60 SELL
+  L3: M1  trigger candle — engulf or pin-bar
+  L4: H1  EMA200 hard block — price must be above EMA200 for BUY, below for SELL
+       (L4 is a veto/block, not a score point — direction="NONE" if violated)
 """
 
 import os, requests, logging
@@ -29,11 +32,8 @@ class SignalEngine:
         self.headers    = {"Authorization":"Bearer "+self.api_key}
 
     INSTR_MAP = {
-        "AUDUSD": "AUD_USD",
         "EURUSD": "EUR_USD",
         "GBPUSD": "GBP_USD",
-        "USDJPY": "USD_JPY",
-        "EURGBP": "EUR_GBP",
     }
 
     def _fetch_candles(self, instrument, granularity, count=60):
@@ -58,13 +58,33 @@ class SignalEngine:
     def analyze(self, asset="EURUSD"):
         instr = self.INSTR_MAP.get(asset)
         if not instr:
-            # fallback: insert underscore at pos 3
             instr = asset[:3]+"_"+asset[3:]
         return self._scalp_m1(instr, asset)
 
     def _scalp_m1(self, instrument, asset):
         reasons = []
         bull = bear = 0
+
+        # ── L0: M15 EMA8 vs EMA21 — momentum direction gate ──────────
+        # If M15 trend disagrees with M5, skip — no counter-trend scalps
+        m15_c, _, _, _ = self._fetch_candles(instrument, "M15", 40)
+        if len(m15_c) < 22:
+            return 0, "NONE", "Not enough M15 data ("+str(len(m15_c))+")"
+
+        m15_ema8  = self._ema(m15_c, 8)[-1]
+        m15_ema21 = self._ema(m15_c, 21)[-1]
+
+        m15_bull = m15_ema8 > m15_ema21 * 1.00002
+        m15_bear = m15_ema8 < m15_ema21 * 0.99998
+
+        if m15_bull:
+            bull += 1
+            reasons.append("✅ M15 bullish")
+        elif m15_bear:
+            bear += 1
+            reasons.append("✅ M15 bearish")
+        else:
+            return 0, "NONE", "M15 EMA flat — no momentum"
 
         # ── L1: M5 EMA8 vs EMA21 ─────────────────────────────────────
         m5_c, _, _, _ = self._fetch_candles(instrument, "M5", 60)
@@ -77,14 +97,16 @@ class SignalEngine:
         bull_bias = ema8 > ema21 * 1.00003
         bear_bias = ema8 < ema21 * 0.99997
 
-        if bull_bias:
+        # L0 and L1 must agree — if M15 is bull but M5 is bear, skip
+        if m15_bull and bull_bias:
             bull += 1
-            reasons.append("✅ EMA bullish")
-        elif bear_bias:
+            reasons.append("✅ M5 EMA bullish")
+        elif m15_bear and bear_bias:
             bear += 1
-            reasons.append("✅ EMA bearish")
+            reasons.append("✅ M5 EMA bearish")
         else:
-            return 0, "NONE", "EMA flat — no bias"
+            reasons.append("M5 EMA disagrees with M15 — skip")
+            return max(bull,bear), "NONE", " | ".join(reasons)
 
         # ── L2: M5 RSI(7) ────────────────────────────────────────────
         rsi = self._rsi(m5_c, 7)
@@ -128,9 +150,36 @@ class SignalEngine:
             reasons.append("No M1 trigger")
             return max(bull,bear), "NONE", " | ".join(reasons)
 
-        if bull >= 3: return 3, "BUY",  " | ".join(reasons)
-        if bear >= 3: return 3, "SELL", " | ".join(reasons)
-        return max(bull,bear), "NONE", " | ".join(reasons)
+        # Score 4/4 reached — now apply L4 H1 EMA200 hard block
+        if bull >= 4:
+            raw_dir = "BUY"
+        elif bear >= 4:
+            raw_dir = "SELL"
+        else:
+            return max(bull,bear), "NONE", " | ".join(reasons)
+
+        # ── L4: H1 EMA200 hard block ─────────────────────────────────
+        # Fetch 210 H1 candles to calculate EMA200
+        h1_c, _, _, _ = self._fetch_candles(instrument, "H1", 210)
+        if len(h1_c) < 200:
+            # Not enough H1 data — allow trade but log warning
+            log.warning(instrument+": Not enough H1 data for EMA200 ("+str(len(h1_c))+") — skipping H1 filter")
+            reasons.append("⚠️ H1 EMA200 unavailable")
+            return max(bull,bear), raw_dir, " | ".join(reasons)
+
+        h1_ema200   = self._ema(h1_c, 200)[-1]
+        current_price = m5_c[-1]
+
+        if raw_dir == "BUY" and current_price < h1_ema200:
+            reasons.append("🚫 H1 EMA200 block: price below EMA200 — no BUY")
+            return max(bull,bear), "NONE", " | ".join(reasons)
+        elif raw_dir == "SELL" and current_price > h1_ema200:
+            reasons.append("🚫 H1 EMA200 block: price above EMA200 — no SELL")
+            return max(bull,bear), "NONE", " | ".join(reasons)
+        else:
+            reasons.append("✅ H1 EMA200="+str(round(h1_ema200,5))+" confirms "+raw_dir)
+
+        return max(bull,bear), raw_dir, " | ".join(reasons)
 
     def _rsi(self, closes, period=14):
         gains, losses = [], []
