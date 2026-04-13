@@ -172,7 +172,12 @@ def run_bot(state):
 
     trader = OandaTrader(demo=settings["demo_mode"])
     if not trader.login():
-        alert.send("❌ Login FAILED!")
+        # FIX-14: Only send Telegram alert during London session to prevent
+        # spam when Railway restarts the container during off-hours
+        if is_in_session(hour, ASSETS["GBP_USD"]):
+            alert.send("❌ Login FAILED! Check OANDA_API_KEY & OANDA_ACCOUNT_ID in Railway Variables.")
+        else:
+            log.warning("Login failed (off-hours — Telegram suppressed)")
         return
 
     current_balance = trader.get_balance()
