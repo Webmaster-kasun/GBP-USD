@@ -1,38 +1,31 @@
 """
-OANDA — M1 Ultra-Scalp Bot
-====================================
-$10,000 demo | 2 pairs | 86,000 units
+OANDA — M1 Ultra-Scalp Bot  (GBP/USD ONLY — London Session)
+============================================================
+$10,000 demo | 1 pair | 74,000 units
 
 Trade specs:
-  Size:    86,000 units
-  SL:      5 pips  => SGD ~58.05
-  TP:      8.5 pips => SGD ~98.81  [1.7:1 R:R]
-  Max dur: 15 minutes hard close
-  2 pairs all TP = SGD ~197 per session
+  Pair:    GBP/USD only
+  Size:    74,000 units
+  SL:      13 pips => SGD ~130
+  TP:      26 pips => SGD ~260  [2:1 R:R]
+  Max dur: 30 minutes hard close
 
-Sessions SGT:
-  EUR/USD  : 24h (all sessions)
-  GBP/USD  : 24h (all sessions)
-  AUD/USD  : REMOVED — 21% win rate
-  USD/JPY  : REMOVED — 14% win rate
+Session SGT (London):
+  GBP/USD  : 15:00 – 23:59 SGT  (London 08:00-17:00 + NY overlap)
 
 Signal Engine (4 layers):
   L0: M15 EMA8 vs EMA21 — direction must match M15 momentum
   L1: M5  EMA8 vs EMA21 — trend bias confirmation
-  L2: M5  RSI(7) snap <40 BUY / >60 SELL
+  L2: M5  RSI(9) <=35 BUY / >=65 SELL + delta>=1.0 + EMA50 + candle
   L3: M1  trigger candle — engulf or pin-bar
   L4: H1  EMA200 — hard block: only BUY above, only SELL below
 
-Telegram: EVENT-ONLY
-
 FIX LOG:
-  BUG-01 to BUG-11: (previous fixes retained)
-  FIX-12: SL=5 pips, TP=8.5 pips (was 7) — R:R now 1:1.70
-  FIX-13: Removed AUD/USD (21% WR) and USD/JPY (14% WR)
-  FIX-14: Bot runs 24h — no weekend/Sunday silent blocks
-  FIX-15: No EOD hard close — trades run to SL/TP/15min naturally
-  FIX-16: Sessions extended to 24h for EUR/USD and GBP/USD
-  FIX-17: Signal engine now has L0 M15 + L4 H1 EMA200 hard block
+  V3-01: Removed EUR/USD — GBP/USD only
+  V3-02: London session only — 15:00-23:59 SGT
+  V3-03: Trade size 74,000 units => TP~SGD 100 / SL~SGD 50 (2:1 R:R)
+  V3-04: SL=13 pips, TP=26 pips
+  V3-05: Signal engine hardcoded for GBPUSD only
 """
 
 import os, json, time, logging, requests
@@ -51,28 +44,21 @@ log = logging.getLogger(__name__)
 sg_tz   = pytz.timezone("Asia/Singapore")
 signals = SignalEngine()
 
-TRADE_SIZE   = 86000
-SL_PIPS      = 5
-TP_PIPS      = 8.5
-MAX_DURATION = 15
+TRADE_SIZE   = 74000   # => TP ~SGD 100 / SL ~SGD 50
+SL_PIPS      = 13
+TP_PIPS      = 26
+MAX_DURATION = 30
 USD_SGD      = 1.35
 
-# FIX-13: Only EUR/USD and GBP/USD
-# FIX-16: Sessions now 24h (0-24)
+# GBP/USD only — London session: 15:00–23:59 SGT
+# London opens 08:00 UK = 15:00 SGT; NY overlap ends ~00:00 SGT
 ASSETS = {
-    "EUR_USD": {
-        "instrument": "EUR_USD", "asset": "EURUSD", "emoji": "🇪🇺💵",
-        "pip": 0.0001, "precision": 5,
-        "stop_pips": SL_PIPS, "tp_pips": TP_PIPS,
-        "max_spread": 1.2,
-        "sessions": [(0, 24)],
-    },
     "GBP_USD": {
         "instrument": "GBP_USD", "asset": "GBPUSD", "emoji": "💷",
         "pip": 0.0001, "precision": 5,
         "stop_pips": SL_PIPS, "tp_pips": TP_PIPS,
         "max_spread": 1.5,
-        "sessions": [(0, 24)],
+        "sessions": [(15, 24)],   # 15:00 – 23:59 SGT
     },
 }
 
@@ -179,11 +165,10 @@ def run_bot(state):
 
     log.info("Scan at " + now.strftime("%H:%M:%S SGT"))
 
-    # FIX-14: No weekend silent block — bot runs 24/7
-
     active = [n for n, c in ASSETS.items() if is_in_session(hour, c)]
     if not active:
-        log.info("No active sessions at " + str(hour) + "h SGT"); return
+        log.info("Outside London session (" + str(hour) + "h SGT) — sleeping until 15:00 SGT")
+        return
 
     trader = OandaTrader(demo=settings["demo_mode"])
     if not trader.login():
@@ -200,9 +185,7 @@ def run_bot(state):
 
     detect_sl_tp_hits(state, trader, alert)
 
-    # FIX-15: No EOD hard close at 22:55 — removed entirely
-
-    # ── 15-MIN HARD CLOSE ────────────────────────────────────────────
+    # ── 15-MIN HARD CLOSE ──────────────────────────────────────────────
     for name in ASSETS:
         pos = trader.get_position(name)
         if not pos:
@@ -229,8 +212,7 @@ def run_bot(state):
         except Exception as e:
             log.warning("Duration check " + name + ": " + str(e))
 
-    # ── SCAN + TRADE ──────────────────────────────────────────────────
-    # FIX-17: threshold=4 (L0+L1+L2+L3 all required; H1 EMA200 is separate hard block in signals)
+    # ── SCAN + TRADE ────────────────────────────────────────────────────
     threshold = settings.get("signal_threshold", 4)
 
     for name, cfg in ASSETS.items():
@@ -266,7 +248,6 @@ def run_bot(state):
                 alert.send("⚠️ NEWS BLOCK\n" + cfg["emoji"] + " " + name + "\n" + news_reason + "\nSkipping this hour")
             log.info(name + ": news — " + news_reason); continue
 
-        # FIX-17: signals.analyze now returns 4-layer score (0-4)
         score, direction, details = signals.analyze(asset=cfg["asset"])
         log.info(name + ": score=" + str(score) + "/" + str(threshold) +
                  " dir=" + direction + " | " + details)
@@ -274,7 +255,7 @@ def run_bot(state):
         if score < threshold or direction == "NONE":
             log.info(name + ": no setup — waiting"); continue
 
-        # ── Place trade ──────────────────────────────────────────────
+        # ── Place trade ────────────────────────────────────────────────
         sl_sgd = round(TRADE_SIZE * SL_PIPS * cfg["pip"] * USD_SGD, 2)
         tp_sgd = round(TRADE_SIZE * TP_PIPS * cfg["pip"] * USD_SGD, 2)
 
@@ -293,11 +274,11 @@ def run_bot(state):
                 + cfg["emoji"] + " " + name + "\n"
                 "Direction: " + direction + "\n"
                 "Score:     " + str(score) + "/" + str(threshold) + " ✅\n"
-                "Size:      86,000 units\n"
+                "Size:      74,000 units\n"
                 "Entry:     " + str(round(price, cfg["precision"])) + "\n"
                 "SL:        " + str(SL_PIPS) + " pips ≈ SGD " + str(sl_sgd) + "\n"
                 "TP:        " + str(TP_PIPS) + " pips ≈ SGD " + str(tp_sgd) + "\n"
-                "Max Time:  15 min\n"
+                "Max Time:  30 min\n"
                 "Spread:    " + str(round(spread, 2)) + "p\n"
                 "Signals:   " + details
             )
@@ -311,7 +292,7 @@ def run_bot(state):
 
 
 if __name__ == "__main__":
-    log.info("🚀 Ultra-Scalp | EUR/USD + GBP/USD | SL=5pip TP=8.5pip | 15min max | 24h")
+    log.info("🚀 GBP/USD London Scalp | SL=13pip(~SGD130) TP=26pip(~SGD260) | 15min max | 15:00-24:00 SGT")
     local_state = {
         "date": datetime.now(sg_tz).strftime("%Y%m%d"),
         "trades": 0, "start_balance": 0.0,

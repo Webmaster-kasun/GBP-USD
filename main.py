@@ -1,5 +1,5 @@
 """
-Railway Entry Point - OANDA Demo 2 Mean Reversion Bot
+Railway Entry Point - OANDA GBP/USD London Scalp Bot
 ======================================================
 Railway runs this 24/7 as a continuous process.
 Runs bot every 5 minutes with IN-MEMORY state
@@ -61,7 +61,7 @@ def main():
 
     log.info("=" * 50)
     log.info("🚀 Railway Bot Started - OANDA Demo 2")
-    log.info("Strategy: M1 Ultra-Scalp")
+    log.info("Strategy: GBP/USD London Session M1 Scalp")
     log.info("Interval: Every " + str(INTERVAL_MINUTES) + " minutes")
     log.info("=" * 50)
 
