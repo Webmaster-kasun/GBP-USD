@@ -14,7 +14,7 @@ class TelegramAlert:
 
     def send(self, message: str):
         if not self.token or not self.chat_id:
-            log.warning("Telegram not configured")
+            log.warning("Telegram not configured — TELEGRAM_TOKEN or TELEGRAM_CHAT_ID missing")
             return False
         try:
             url  = f"https://api.telegram.org/bot{self.token}/sendMessage"
@@ -24,7 +24,7 @@ class TelegramAlert:
             if r.status_code == 200:
                 log.info("Telegram sent!")
                 return True
-            log.warning(f"Telegram error: {r.text}")
+            log.warning(f"Telegram error {r.status_code}: {r.text[:200]}")
             return False
         except Exception as e:
             log.error(f"Telegram error: {e}")

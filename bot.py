@@ -21,11 +21,10 @@ Signal Engine (4 layers):
   L4: H1  EMA200 — hard block: only BUY above, only SELL below
 
 FIX LOG:
-  V3-01: Removed EUR/USD — GBP/USD only
-  V3-02: London session only — 15:00-23:59 SGT
-  V3-03: Trade size 74,000 units => TP~SGD 100 / SL~SGD 50 (2:1 R:R)
-  V3-04: SL=13 pips, TP=26 pips
-  V3-05: Signal engine hardcoded for GBPUSD only
+  FIX-01: Login FAILED Telegram only sent inside London session
+           — prevents spam during off-hours restarts/redeploys
+  FIX-02: Login fail alert deduplicated — max 1 alert per 30 mins
+  FIX-03: Daily summary sent at session open (moved to main.py)
 """
 
 import os, json, time, logging, requests
@@ -51,7 +50,6 @@ MAX_DURATION = 30
 USD_SGD      = 1.35
 
 # GBP/USD only — London session: 15:00–23:59 SGT
-# London opens 08:00 UK = 15:00 SGT; NY overlap ends ~00:00 SGT
 ASSETS = {
     "GBP_USD": {
         "instrument": "GBP_USD", "asset": "GBPUSD", "emoji": "💷",
@@ -115,6 +113,12 @@ def cooldown_remaining(state, name):
         return "?"
 
 
+def _login_fail_alert_key(now):
+    """Key for deduplicating login fail alerts — one per 30-min window."""
+    slot = now.hour * 2 + (1 if now.minute >= 30 else 0)
+    return "login_fail_" + now.strftime("%Y%m%d") + "_" + str(slot)
+
+
 def detect_sl_tp_hits(state, trader, alert):
     if "open_times" not in state:
         return
@@ -172,24 +176,32 @@ def run_bot(state):
 
     trader = OandaTrader(demo=settings["demo_mode"])
     if not trader.login():
-        api_key    = os.environ.get("OANDA_API_KEY", "")
-        account_id = os.environ.get("OANDA_ACCOUNT_ID", "")
-        if not api_key or not account_id:
-            msg = (
-                "❌ Login FAILED — Missing Env Vars!\n"
-                "OANDA_API_KEY: " + ("✅ SET" if api_key else "❌ MISSING") + "\n"
-                "OANDA_ACCOUNT_ID: " + ("✅ SET" if account_id else "❌ MISSING") + "\n"
-                "→ Go to Railway → Variables and set both!"
-            )
+        # FIX-01 + FIX-02: Only alert inside session, and deduplicate per 30-min window
+        alert_key = _login_fail_alert_key(now)
+        if not state.get("login_fail_alerted", {}).get(alert_key):
+            if "login_fail_alerted" not in state:
+                state["login_fail_alerted"] = {}
+            state["login_fail_alerted"][alert_key] = True
+
+            api_key    = os.environ.get("OANDA_API_KEY", "")
+            account_id = os.environ.get("OANDA_ACCOUNT_ID", "")
+            if not api_key or not account_id:
+                msg = (
+                    "❌ Login FAILED — Missing Env Vars!\n"
+                    "OANDA_API_KEY: " + ("✅ SET" if api_key else "❌ MISSING") + "\n"
+                    "OANDA_ACCOUNT_ID: " + ("✅ SET" if account_id else "❌ MISSING") + "\n"
+                    "→ Go to Railway → Variables and set both!"
+                )
+            else:
+                msg = (
+                    "❌ Login FAILED\n"
+                    "Key: " + api_key[:8] + "****\n"
+                    "Account: " + account_id + "\n"
+                    "Check Railway logs for HTTP error."
+                )
+            alert.send(msg)
         else:
-            msg = (
-                "❌ Login FAILED\n"
-                "Key: " + api_key[:8] + "****\n"
-                "Account: " + account_id + "\n"
-                "Check Railway logs for HTTP error code."
-            )
-        # Always alert on login fail — this is critical regardless of session
-        alert.send(msg)
+            log.warning("Login failed (alert already sent this window — suppressed)")
         return
 
     current_balance = trader.get_balance()
@@ -202,7 +214,7 @@ def run_bot(state):
 
     detect_sl_tp_hits(state, trader, alert)
 
-    # ── 15-MIN HARD CLOSE ──────────────────────────────────────────────
+    # ── 30-MIN HARD CLOSE ──────────────────────────────────────────────
     for name in ASSETS:
         pos = trader.get_position(name)
         if not pos:
@@ -220,7 +232,7 @@ def run_bot(state):
                 trader.close_position(name)
                 state.get("open_times", {}).pop(name, None)
                 alert.send(
-                    "⏰ 15-MIN TIMEOUT\n"
+                    "⏰ 30-MIN TIMEOUT\n"
                     + ASSETS[name]["emoji"] + " " + name + "\n"
                     "Closed at " + str(round(mins, 1)) + " min\n"
                     "PnL: $" + str(round(pnl, 2)) + " USD " + ("✅" if pnl >= 0 else "🔴") + "\n"
@@ -309,12 +321,13 @@ def run_bot(state):
 
 
 if __name__ == "__main__":
-    log.info("🚀 GBP/USD London Scalp | SL=13pip(~SGD130) TP=26pip(~SGD260) | 15min max | 15:00-24:00 SGT")
+    log.info("🚀 GBP/USD London Scalp | SL=13pip(~SGD130) TP=26pip(~SGD260) | 30min max | 15:00-24:00 SGT")
     local_state = {
         "date": datetime.now(sg_tz).strftime("%Y%m%d"),
         "trades": 0, "start_balance": 0.0,
         "wins": 0, "losses": 0, "consec_losses": 0,
         "cooldowns": {}, "open_times": {}, "news_alerted": {},
+        "session_alerted": False, "login_fail_alerted": {},
     }
     while True:
         try:
