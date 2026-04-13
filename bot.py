@@ -1,30 +1,23 @@
 """
-OANDA — M1 Ultra-Scalp Bot  (GBP/USD ONLY — London Session)
-============================================================
-$10,000 demo | 1 pair | 74,000 units
+OANDA — GBP/USD Two-Session Scalp Bot
+======================================
+Pair:    GBP/USD only
+Size:    74,000 units
+SL:      13 pips
+TP:      26 pips  [2:1 R:R]
+Max dur: 30 minutes
 
-Trade specs:
-  Pair:    GBP/USD only
-  Size:    74,000 units
-  SL:      13 pips => SGD ~130
-  TP:      26 pips => SGD ~260  [2:1 R:R]
-  Max dur: 30 minutes hard close
+Two trading windows per day (SGT):
+  Window 1 — Early Session : 08:00–12:00 SGT (Frankfurt pre-London)
+  Window 2 — London Open   : 15:00–17:00 SGT (London open momentum)
 
-Session SGT (London):
-  GBP/USD  : 15:00 – 23:59 SGT  (London 08:00-17:00 + NY overlap)
-
-Signal Engine (4 layers):
-  L0: M15 EMA8 vs EMA21 — direction must match M15 momentum
-  L1: M5  EMA8 vs EMA21 — trend bias confirmation
-  L2: M5  RSI(9) <=35 BUY / >=65 SELL + delta>=1.0 + EMA50 + candle
-  L3: M1  trigger candle — engulf or pin-bar
-  L4: H1  EMA200 — hard block: only BUY above, only SELL below
-
-FIX LOG:
-  FIX-01: Login FAILED Telegram only sent inside London session
-           — prevents spam during off-hours restarts/redeploys
-  FIX-02: Login fail alert deduplicated — max 1 alert per 30 mins
-  FIX-03: Daily summary sent at session open (moved to main.py)
+Rules:
+  - Max 1 trade per window
+  - Max 2 trades per day total
+  - After trade in window → wait for next window
+  - SL hit in window → skip rest of that window
+  - Max spread: 1.2 pip (window 1) / 1.5 pip (window 2)
+  - Signal: 3/3 required (H1 trend + M15 break + M5 pullback)
 """
 
 import os, json, time, logging, requests
@@ -43,26 +36,31 @@ log = logging.getLogger(__name__)
 sg_tz   = pytz.timezone("Asia/Singapore")
 signals = SignalEngine()
 
-TRADE_SIZE   = 74000   # => TP ~SGD 100 / SL ~SGD 50
+TRADE_SIZE   = 74000
 SL_PIPS      = 13
 TP_PIPS      = 26
 MAX_DURATION = 30
 USD_SGD      = 1.35
 
-# GBP/USD only — London session: 15:00–23:59 SGT
+# Two windows — same pair different spread tolerance
 ASSETS = {
     "GBP_USD": {
-        "instrument": "GBP_USD", "asset": "GBPUSD", "emoji": "💷",
-        "pip": 0.0001, "precision": 5,
-        "stop_pips": SL_PIPS, "tp_pips": TP_PIPS,
-        "max_spread": 1.5,
-        "sessions": [(15, 24)],   # 15:00 – 23:59 SGT
+        "instrument": "GBP_USD",
+        "asset":      "GBPUSD",
+        "emoji":      "💷",
+        "pip":        0.0001,
+        "precision":  5,
+        "stop_pips":  SL_PIPS,
+        "tp_pips":    TP_PIPS,
+        "sessions": [
+            {"start": 8,  "end": 12, "max_spread": 1.2, "label": "Early"},
+            {"start": 15, "end": 17, "max_spread": 1.5, "label": "London"},
+        ],
     },
 }
 
-DEFAULT_SETTINGS = {"signal_threshold": 4, "demo_mode": True}
-
-_SETTINGS_PATH = Path(__file__).parent / "settings.json"
+DEFAULT_SETTINGS = {"signal_threshold": 3, "demo_mode": True}
+_SETTINGS_PATH   = Path(__file__).parent / "settings.json"
 
 
 def load_settings():
@@ -75,8 +73,26 @@ def load_settings():
     return DEFAULT_SETTINGS
 
 
+def get_active_session(hour):
+    """Return active session config or None."""
+    cfg = ASSETS["GBP_USD"]
+    for s in cfg["sessions"]:
+        if s["start"] <= hour < s["end"]:
+            return s
+    return None
+
+
 def is_in_session(hour, cfg):
-    return any(s <= hour < e for s, e in cfg["sessions"])
+    """Used by main.py for session open alert."""
+    for s in cfg["sessions"]:
+        if s["start"] <= hour < s["end"]:
+            return True
+    return False
+
+
+def window_key(session_label, date_str):
+    """Unique key per window per day."""
+    return "window_" + date_str + "_" + session_label
 
 
 def set_cooldown(state, name):
@@ -91,12 +107,9 @@ def in_cooldown(state, name):
     if not cd:
         return False
     try:
-        cd_dt   = datetime.fromisoformat(cd)
-        now_utc = datetime.now(timezone.utc)
-        elapsed = (now_utc - cd_dt).total_seconds() / 60
+        elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(cd)).total_seconds() / 60
         return elapsed < 30
-    except Exception as e:
-        log.warning("in_cooldown parse error for " + name + ": " + str(e))
+    except:
         return False
 
 
@@ -105,16 +118,13 @@ def cooldown_remaining(state, name):
     if not cd:
         return 0
     try:
-        cd_dt   = datetime.fromisoformat(cd)
-        now_utc = datetime.now(timezone.utc)
-        elapsed = (now_utc - cd_dt).total_seconds() / 60
+        elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(cd)).total_seconds() / 60
         return max(0, int(30 - elapsed))
     except:
         return "?"
 
 
-def _login_fail_alert_key(now):
-    """Key for deduplicating login fail alerts — one per 30-min window."""
+def _login_fail_key(now):
     slot = now.hour * 2 + (1 if now.minute >= 30 else 0)
     return "login_fail_" + now.strftime("%Y%m%d") + "_" + str(slot)
 
@@ -161,60 +171,56 @@ def detect_sl_tp_hits(state, trader, alert):
 
 
 def run_bot(state):
-    settings  = load_settings()
-    now       = datetime.now(sg_tz)
-    hour      = now.hour
-    alert     = TelegramAlert()
-    calendar  = CalendarFilter()
+    settings = load_settings()
+    now      = datetime.now(sg_tz)
+    hour     = now.hour
+    today    = now.strftime("%Y%m%d")
+    alert    = TelegramAlert()
+    calendar = CalendarFilter()
 
     log.info("Scan at " + now.strftime("%H:%M:%S SGT"))
 
-    active = [n for n, c in ASSETS.items() if is_in_session(hour, c)]
-    if not active:
-        log.info("Outside London session (" + str(hour) + "h SGT) — sleeping until 15:00 SGT")
+    # Check active session
+    session = get_active_session(hour)
+    if not session:
+        log.info("Outside trading windows (" + str(hour) + "h SGT) — next: 08:00 or 15:00 SGT")
         return
 
+    log.info("Window: " + session["label"] + " | Max spread: " + str(session["max_spread"]) + " pip")
+
+    # Check if this window already used today
+    wkey = window_key(session["label"], today)
+    if state.get("windows_used", {}).get(wkey):
+        log.info(session["label"] + " window already traded today — waiting for next window")
+        return
+
+    # Login
     trader = OandaTrader(demo=settings["demo_mode"])
     if not trader.login():
-        # FIX-01 + FIX-02: Only alert inside session, and deduplicate per 30-min window
-        alert_key = _login_fail_alert_key(now)
-        if not state.get("login_fail_alerted", {}).get(alert_key):
+        fail_key = _login_fail_key(now)
+        if not state.get("login_fail_alerted", {}).get(fail_key):
             if "login_fail_alerted" not in state:
                 state["login_fail_alerted"] = {}
-            state["login_fail_alerted"][alert_key] = True
-
+            state["login_fail_alerted"][fail_key] = True
             api_key    = os.environ.get("OANDA_API_KEY", "")
             account_id = os.environ.get("OANDA_ACCOUNT_ID", "")
-            if not api_key or not account_id:
-                msg = (
-                    "❌ Login FAILED — Missing Env Vars!\n"
-                    "OANDA_API_KEY: " + ("✅ SET" if api_key else "❌ MISSING") + "\n"
-                    "OANDA_ACCOUNT_ID: " + ("✅ SET" if account_id else "❌ MISSING") + "\n"
-                    "→ Go to Railway → Variables and set both!"
-                )
-            else:
-                msg = (
-                    "❌ Login FAILED\n"
-                    "Key: " + api_key[:8] + "****\n"
-                    "Account: " + account_id + "\n"
-                    "Check Railway logs for HTTP error."
-                )
-            alert.send(msg)
+            alert.send(
+                "❌ Login FAILED\n"
+                "Key: " + (api_key[:8] + "****" if api_key else "MISSING") + "\n"
+                "Account: " + (account_id if account_id else "MISSING") + "\n"
+                "Check Railway logs."
+            )
         else:
-            log.warning("Login failed (alert already sent this window — suppressed)")
+            log.warning("Login failed — alert already sent this window")
         return
 
     current_balance = trader.get_balance()
-
     if "start_balance" not in state or state["start_balance"] == 0.0:
         state["start_balance"] = current_balance
 
-    realized_pnl = round(current_balance - state["start_balance"], 2)
-    pl_sgd       = round(realized_pnl * USD_SGD, 2)
-
     detect_sl_tp_hits(state, trader, alert)
 
-    # ── 30-MIN HARD CLOSE ──────────────────────────────────────────────
+    # ── 30-MIN HARD CLOSE ─────────────────────────────────────────────
     for name in ASSETS:
         pos = trader.get_position(name)
         if not pos:
@@ -241,13 +247,12 @@ def run_bot(state):
         except Exception as e:
             log.warning("Duration check " + name + ": " + str(e))
 
-    # ── SCAN + TRADE ────────────────────────────────────────────────────
-    threshold = settings.get("signal_threshold", 4)
+    # ── SCAN + TRADE ──────────────────────────────────────────────────
+    threshold = settings.get("signal_threshold", 3)
 
     for name, cfg in ASSETS.items():
-        if not is_in_session(hour, cfg):
-            log.info(name + ": off-session"); continue
 
+        # Skip if position already open
         pos = trader.get_position(name)
         if pos:
             pnl_sgd = round(trader.check_pnl(pos) * USD_SGD, 2)
@@ -255,18 +260,22 @@ def run_bot(state):
             log.info(name + ": " + dirn + " open SGD " + str(pnl_sgd))
             continue
 
+        # Skip if in cooldown
         if in_cooldown(state, name):
-            remaining = cooldown_remaining(state, name)
-            log.info(name + ": cooldown " + str(remaining) + "min"); continue
+            log.info(name + ": cooldown " + str(cooldown_remaining(state, name)) + "min")
+            continue
 
+        # Spread check using session max_spread
         price, bid, ask = trader.get_price(name)
         if price is None:
             log.warning(name + ": price error"); continue
 
         spread = (ask - bid) / cfg["pip"]
-        if spread > cfg["max_spread"]:
-            log.info(name + ": spread " + str(round(spread, 2)) + "p > " + str(cfg["max_spread"]) + "p skip"); continue
+        if spread > session["max_spread"]:
+            log.info(name + ": spread " + str(round(spread, 2)) + "p > " + str(session["max_spread"]) + "p — skip")
+            continue
 
+        # News filter
         news_active, news_reason = calendar.is_news_time(name)
         if news_active:
             alert_key = name + "_news_" + now.strftime("%Y%m%d%H")
@@ -274,17 +283,20 @@ def run_bot(state):
                 if "news_alerted" not in state:
                     state["news_alerted"] = {}
                 state["news_alerted"][alert_key] = True
-                alert.send("⚠️ NEWS BLOCK\n" + cfg["emoji"] + " " + name + "\n" + news_reason + "\nSkipping this hour")
-            log.info(name + ": news — " + news_reason); continue
+                alert.send("⚠️ NEWS BLOCK\n" + cfg["emoji"] + " " + name + "\n" + news_reason + "\nSkipping")
+            log.info(name + ": news — " + news_reason)
+            continue
 
+        # Signal check
         score, direction, details = signals.analyze(asset=cfg["asset"])
         log.info(name + ": score=" + str(score) + "/" + str(threshold) +
                  " dir=" + direction + " | " + details)
 
         if score < threshold or direction == "NONE":
-            log.info(name + ": no setup — waiting"); continue
+            log.info(name + ": no setup — waiting")
+            continue
 
-        # ── Place trade ────────────────────────────────────────────────
+        # ── Place trade ───────────────────────────────────────────────
         sl_sgd = round(TRADE_SIZE * SL_PIPS * cfg["pip"] * USD_SGD, 2)
         tp_sgd = round(TRADE_SIZE * TP_PIPS * cfg["pip"] * USD_SGD, 2)
 
@@ -297,9 +309,15 @@ def run_bot(state):
             if "open_times" not in state:
                 state["open_times"] = {}
             state["open_times"][name] = now.isoformat()
+
+            # Mark window as used — max 1 trade per window
+            if "windows_used" not in state:
+                state["windows_used"] = {}
+            state["windows_used"][wkey] = True
+
             price, _, _ = trader.get_price(name)
             alert.send(
-                "🔄 NEW TRADE!\n"
+                "🔄 NEW TRADE! [" + session["label"] + " Window]\n"
                 + cfg["emoji"] + " " + name + "\n"
                 "Direction: " + direction + "\n"
                 "Score:     " + str(score) + "/" + str(threshold) + " ✅\n"
@@ -311,27 +329,9 @@ def run_bot(state):
                 "Spread:    " + str(round(spread, 2)) + "p\n"
                 "Signals:   " + details
             )
-            log.info(name + ": PLACED " + direction +
-                     " SGD SL=" + str(sl_sgd) + " TP=" + str(tp_sgd))
+            log.info(name + ": PLACED " + direction + " SL=" + str(sl_sgd) + " TP=" + str(tp_sgd))
         else:
             set_cooldown(state, name)
             log.warning(name + ": order failed — " + str(result.get("error", "")))
 
     log.info("Scan complete.")
-
-
-if __name__ == "__main__":
-    log.info("🚀 GBP/USD London Scalp | SL=13pip(~SGD130) TP=26pip(~SGD260) | 30min max | 15:00-24:00 SGT")
-    local_state = {
-        "date": datetime.now(sg_tz).strftime("%Y%m%d"),
-        "trades": 0, "start_balance": 0.0,
-        "wins": 0, "losses": 0, "consec_losses": 0,
-        "cooldowns": {}, "open_times": {}, "news_alerted": {},
-        "session_alerted": False, "login_fail_alerted": {},
-    }
-    while True:
-        try:
-            run_bot(state=local_state)
-        except Exception as e:
-            log.error("Bot error: " + str(e))
-        time.sleep(60)
