@@ -108,8 +108,10 @@ class SignalEngine:
         structure_low  = min(recent_lows)
         last_close     = m15_c[-1]
 
-        bull_break = last_close > structure_high
-        bear_break = last_close < structure_low
+        # FIX-1: cap how late the entry is — if price already moved 3+ pips past
+        # the structure level the move is over, skip it (prevents chasing)
+        bull_break = (last_close > structure_high) and (last_close <= structure_high + 0.00030)
+        bear_break = (last_close < structure_low)  and (last_close >= structure_low  - 0.00030)
 
         if direction == "BUY" and bull_break:
             reasons.append(
@@ -143,14 +145,17 @@ class SignalEngine:
         c_low   = m5_l[-1]
         c_range = max(c_high - c_low, 0.00001)
 
-        # Strong bounce candle body > 55% of range
-        bull_body = (c_close > c_open) and ((c_close - c_low) / c_range >= 0.55)
-        bear_body = (c_close < c_open) and ((c_high - c_close) / c_range >= 0.55)
+        # FIX-3: minimum candle range 3 pips — filters weak micro candles
+        MIN_CANDLE_RANGE = 0.00030
 
-        # Price touched near EMA21 in last 3 candles (1.5 pip tolerance)
-        ema_tol         = 0.00015
-        recent_lows_m5  = m5_l[-4:-1]
-        recent_highs_m5 = m5_h[-4:-1]
+        # Strong bounce candle body > 55% of range + must be a real candle
+        bull_body = (c_close > c_open) and ((c_close - c_low) / c_range >= 0.55) and (c_range >= MIN_CANDLE_RANGE)
+        bear_body = (c_close < c_open) and ((c_high - c_close) / c_range >= 0.55) and (c_range >= MIN_CANDLE_RANGE)
+
+        # FIX-2: tighter pullback — 1.0 pip tolerance, last 2 candles only (was 1.5 pip / 3 candles)
+        ema_tol         = 0.00010
+        recent_lows_m5  = m5_l[-3:-1]
+        recent_highs_m5 = m5_h[-3:-1]
         bull_pullback   = any(l <= ema21 + ema_tol for l in recent_lows_m5)
         bear_pullback   = any(h >= ema21 - ema_tol for h in recent_highs_m5)
 
