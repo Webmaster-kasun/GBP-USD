@@ -110,8 +110,8 @@ class SignalEngine:
 
         # FIX-1: cap how late the entry is — if price already moved 3+ pips past
         # the structure level the move is over, skip it (prevents chasing)
-        bull_break = (last_close > structure_high) and (last_close <= structure_high + 0.00030)
-        bear_break = (last_close < structure_low)  and (last_close >= structure_low  - 0.00030)
+        bull_break = (last_close > structure_high) and (last_close <= structure_high + 0.00080)
+        bear_break = (last_close < structure_low)  and (last_close >= structure_low  - 0.00080)
 
         if direction == "BUY" and bull_break:
             reasons.append(
@@ -152,10 +152,10 @@ class SignalEngine:
         bull_body = (c_close > c_open) and ((c_close - c_low) / c_range >= 0.55) and (c_range >= MIN_CANDLE_RANGE)
         bear_body = (c_close < c_open) and ((c_high - c_close) / c_range >= 0.55) and (c_range >= MIN_CANDLE_RANGE)
 
-        # FIX-2: tighter pullback — 1.0 pip tolerance, last 2 candles only (was 1.5 pip / 3 candles)
-        ema_tol         = 0.00010
-        recent_lows_m5  = m5_l[-3:-1]
-        recent_highs_m5 = m5_h[-3:-1]
+        # FIX-2: wider pullback window — 1.5 pip tolerance, last 5 candles (L1 break and pullback rarely on same candle)
+        ema_tol         = 0.00015
+        recent_lows_m5  = m5_l[-6:-1]
+        recent_highs_m5 = m5_h[-6:-1]
         bull_pullback   = any(l <= ema21 + ema_tol for l in recent_lows_m5)
         bear_pullback   = any(h >= ema21 - ema_tol for h in recent_highs_m5)
 
@@ -186,11 +186,12 @@ class SignalEngine:
         if len(h1_long_c) >= 200:
             h1_ema200 = self._ema(h1_long_c, 200)[-1]
             price_now = m5_c[-1]
-            if direction == "BUY" and price_now < h1_ema200:
-                reasons.append("🚫 VETO H1 EMA200=" + str(round(h1_ema200, 5)) + " price below — no BUY")
+            ema200_buf = 0.00050  # 5 pip buffer — avoid blocking trades right at EMA200
+            if direction == "BUY" and price_now < h1_ema200 - ema200_buf:
+                reasons.append("🚫 VETO H1 EMA200=" + str(round(h1_ema200, 5)) + " price well below — no BUY")
                 return score, "NONE", " | ".join(reasons)
-            elif direction == "SELL" and price_now > h1_ema200:
-                reasons.append("🚫 VETO H1 EMA200=" + str(round(h1_ema200, 5)) + " price above — no SELL")
+            elif direction == "SELL" and price_now > h1_ema200 + ema200_buf:
+                reasons.append("🚫 VETO H1 EMA200=" + str(round(h1_ema200, 5)) + " price well above — no SELL")
                 return score, "NONE", " | ".join(reasons)
             else:
                 reasons.append("✅ VETO pass EMA200=" + str(round(h1_ema200, 5)))
