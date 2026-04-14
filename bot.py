@@ -1,10 +1,11 @@
 """
-bot.py — GBP/USD Two-Session Scalp Bot
-FIXES:
-  FIX-01: Added run_bot() and ASSETS that main.py expects (was crashing every cycle)
-  FIX-02: in_session() now uses SGT timezone (was using UTC on Railway — hours off)
-  FIX-03: Session window 2 extended to 18:00 SGT (was cutting off NY overlap)
-  FIX-04: is_in_session() helper added for main.py compatibility
+bot.py — GBP/USD Multi-Session Scalp Bot
+SESSIONS:
+  06:00–08:00 SGT — Asian Pre-London
+  07:00–13:00 SGT — London Open
+  15:00–19:00 SGT — NY Overlap
+  19:00–23:30 SGT — Late NY
+Max 4 trades/day, 1 per session window.
 """
 
 import logging
@@ -19,22 +20,24 @@ log = logging.getLogger(__name__)
 
 sg_tz = pytz.timezone("Asia/Singapore")
 
-# Asset config that main.py imports
+# Asset config — imported by main.py
 ASSETS = {
     "GBP_USD": {
         "sessions": [
-            {"name": "London Open",  "start": 8,  "end": 12, "max_spread": 2.0},
-            {"name": "NY Overlap",   "start": 15, "end": 18, "max_spread": 2.2},  # FIX-03: was end=17
+            {"name": "Asian Pre-London", "start": 6,  "end": 8,  "max_spread": 1.8},
+            {"name": "London Open",      "start": 7,  "end": 13, "max_spread": 2.0},
+            {"name": "NY Overlap",       "start": 15, "end": 19, "max_spread": 2.2},
+            {"name": "Late NY",          "start": 19, "end": 23, "max_spread": 2.5},
         ],
         "sl_pips": 13,
         "tp_pips": 26,
-        "max_trades": 2,
+        "max_trades": 4,
     }
 }
 
 
 def is_in_session(hour, asset_cfg):
-    """Used by main.py — checks if given SGT hour falls in any session."""
+    """Used by main.py."""
     for s in asset_cfg["sessions"]:
         if s["start"] <= hour < s["end"]:
             return True
@@ -42,7 +45,7 @@ def is_in_session(hour, asset_cfg):
 
 
 def in_session():
-    """Returns active session dict or None. FIX-02: SGT timezone."""
+    """Returns active session dict or None. Uses SGT timezone."""
     now  = datetime.now(sg_tz)
     hour = now.hour
     for s in config.SESSIONS:
@@ -78,25 +81,22 @@ def evaluate(df_h1, df_m15, df_m5, spread):
 
 
 def run_bot(state):
-    """
-    Called every 5 min by main.py.
-    FIX-01: Was missing entirely — main.py crashed on every single cycle.
-    """
+    """Called every 5 min by main.py."""
     instrument = "GBP_USD"
     asset_cfg  = ASSETS[instrument]
 
     now  = datetime.now(sg_tz)
     hour = now.hour
 
-    # Find active session
+    # Find active session — note 07:00–08:00 overlaps Asian+London, London takes priority
     active_session = None
     for s in asset_cfg["sessions"]:
         if s["start"] <= hour < s["end"]:
             active_session = s
-            break
+            break  # first match wins (ordered by priority above)
 
     if not active_session:
-        log.info(f"[{instrument}] Outside session ({hour:02d}:xx SGT) — skipping")
+        log.info(f"[{instrument}] Outside all sessions ({hour:02d}:xx SGT) — skipping")
         return
 
     # Max trades guard
@@ -118,25 +118,22 @@ def run_bot(state):
             log.warning(f"[{instrument}] OANDA login failed")
             return
 
-        # Skip if already in position
         if trader.get_position(instrument):
             log.info(f"[{instrument}] Position already open — skipping")
             return
 
-        # Spread check
         mid, bid, ask = trader.get_price(instrument)
         if not mid:
             log.warning(f"[{instrument}] Could not get price")
             return
 
         spread_pips = round((ask - bid) / 0.0001, 1)
-        log.info(f"[{instrument}] Price={mid:.5f}  Spread={spread_pips:.1f}pip")
+        log.info(f"[{instrument}] Price={mid:.5f}  Spread={spread_pips:.1f}pip  Session={active_session['name']}")
 
         if spread_pips > active_session["max_spread"]:
             log.info(f"[{instrument}] Spread {spread_pips} > limit {active_session['max_spread']} — skipping")
             return
 
-        # Fetch candles
         df_h1  = trader.get_candles(instrument, "H1",  120)
         df_m15 = trader.get_candles(instrument, "M15", 80)
         df_m5  = trader.get_candles(instrument, "M5",  60)
@@ -151,7 +148,6 @@ def run_bot(state):
             log.info(f"[{instrument}] No signal — {reason}")
             return
 
-        # Sizing: risk_per_trade % of balance over sl_pips
         balance  = trader.get_balance()
         risk_amt = balance * (config.RISK["risk_per_trade"] / 100.0)
         sl_pips  = asset_cfg["sl_pips"]
@@ -159,7 +155,7 @@ def run_bot(state):
         size     = max(1000, int((risk_amt / sl_pips) * 10000))
         size     = min(size, 50000)
 
-        log.info(f"[{instrument}] >>> {direction} | SL={sl_pips}p TP={tp_pips}p size={size}")
+        log.info(f"[{instrument}] >>> {direction} | Session={active_session['name']} | SL={sl_pips}p TP={tp_pips}p size={size}")
 
         result = trader.place_order(
             instrument     = instrument,
