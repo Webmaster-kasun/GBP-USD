@@ -1,16 +1,19 @@
 """
-main.py — Entry point for GBP/USD scalp bot (Railway + GitHub Actions)
+main.py — Entry point for GBP/USD trend-pullback bot (v2 Improved)
 
 Sessions (SGT):
-  06:00 – 08:00  Asian Pre-London
   07:00 – 13:00  London Open
   15:00 – 19:00  NY Overlap
-  19:00 – 23:00  Late NY
 
-FIX-01: GitHub Actions mode — runs once and exits (Actions re-fires every 5 min via cron).
-FIX-02: Railway mode — polls every 5 minutes in a loop (set ENV var RAILWAY=true).
-FIX-03: News filter wired in — pauses 30 min before/after high-impact USD/GBP events.
-FIX-04: pandas added to requirements so candle DataFrames work.
+Run modes:
+  GitHub Actions — single shot per cron trigger (every 5 min via workflow)
+  Railway        — polling loop every 5 minutes (set RAILWAY=true env var)
+
+Fixes vs v1:
+  FIX-01: Session alerts updated — Asian Pre-London and Late NY removed
+  FIX-02: News filter wired in — pauses 30 min before/after high-impact events
+  FIX-03: State persisted across GitHub Actions runs via bot_state.json artifact
+  FIX-04: Max trades per day set to 1 in fresh_day_state
 """
 
 import os
@@ -20,9 +23,9 @@ import traceback
 from datetime import datetime
 import pytz
 
-from bot            import run_bot, ASSETS, is_in_session
-from oanda_trader   import OandaTrader
-from telegram_alert import TelegramAlert
+from bot             import run_bot, ASSETS, is_in_session
+from oanda_trader    import OandaTrader
+from telegram_alert  import TelegramAlert
 from calendar_filter import EconomicCalendar
 
 logging.basicConfig(
@@ -35,25 +38,22 @@ INTERVAL_MINUTES = 5
 sg_tz            = pytz.timezone("Asia/Singapore")
 STATE            = {}
 
+# Only London and NY Overlap session alerts
 SESSION_ALERTS = [
-    {"start": 6,  "label": "Asian Pre-London", "desc": "06:00–08:00 SGT"},
-    {"start": 7,  "label": "London Open",      "desc": "07:00–13:00 SGT"},
-    {"start": 15, "label": "NY Overlap",       "desc": "15:00–19:00 SGT"},
-    {"start": 19, "label": "Late NY",          "desc": "19:00–23:00 SGT"},
+    {"start": 7,  "label": "London Open", "desc": "07:00–13:00 SGT"},
+    {"start": 15, "label": "NY Overlap",  "desc": "15:00–19:00 SGT"},
 ]
 
-# State file path — persists across GitHub Actions runs via artifact OR env var injection
 STATE_FILE = "bot_state.json"
 
 
 def load_state():
-    """Load persisted state from file if it exists."""
     import json
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE) as f:
                 s = json.load(f)
-                log.info(f"State loaded: {s.get('date')} | trades={s.get('trades',0)}")
+                log.info(f"State loaded: {s.get('date')} | trades={s.get('trades', 0)}")
                 return s
     except Exception as e:
         log.warning(f"State load failed: {e}")
@@ -61,12 +61,11 @@ def load_state():
 
 
 def save_state(state):
-    """Persist state so next GitHub Actions run knows trades already taken."""
     import json
     try:
         with open(STATE_FILE, "w") as f:
             json.dump(state, f)
-        log.info(f"State saved: {state.get('date')} | trades={state.get('trades',0)}")
+        log.info(f"State saved: {state.get('date')} | trades={state.get('trades', 0)}")
     except Exception as e:
         log.warning(f"State save failed: {e}")
 
@@ -136,7 +135,6 @@ def check_session_open_alerts(alert, state):
 
 
 def run_once(state, calendar):
-    """One polling cycle — called by GitHub Actions (run once) or Railway loop."""
     global STATE
 
     now   = datetime.now(sg_tz)
@@ -159,7 +157,7 @@ def run_once(state, calendar):
     alert = TelegramAlert()
     check_session_open_alerts(alert, state)
 
-    # News filter — skip if blackout window
+    # News blackout filter
     is_news, news_reason = calendar.is_news_time("GBP_USD")
     if is_news:
         log.warning(f"📰 NEWS BLACKOUT — skipping: {news_reason}")
@@ -178,12 +176,11 @@ def main():
     global STATE
 
     log.info("=" * 50)
-    log.info("🚀 GBP/USD Scalp Bot — Fixed Build")
-    log.info("Session 1: 06:00–08:00 SGT  Asian Pre-London")
-    log.info("Session 2: 07:00–13:00 SGT  London Open")
-    log.info("Session 3: 15:00–19:00 SGT  NY Overlap")
-    log.info("Session 4: 19:00–23:00 SGT  Late NY")
-    log.info("GBP/USD | SL=13pip | TP=26pip | Max 4 trades/day")
+    log.info("🚀 GBP/USD Trend-Pullback Bot v2 — Improved")
+    log.info("Session 1: 07:00–13:00 SGT  London Open")
+    log.info("Session 2: 15:00–19:00 SGT  NY Overlap")
+    log.info("GBP/USD | SL=20pip | TP=30pip (1.5:1) | Max 1 trade/day")
+    log.info("Trend: H1 EMA50/200 | RSI gate | EMA34 pullback | ATR≥5pip")
     log.info("=" * 50)
 
     if not check_env_vars():
@@ -192,20 +189,18 @@ def main():
 
     calendar = EconomicCalendar()
 
-    # Detect run mode:
-    # - RAILWAY=true  → loop forever (Railway worker)
-    # - Default       → run once and exit (GitHub Actions fires every 5 min via cron)
     is_railway = os.environ.get("RAILWAY", "").lower() in ("true", "1", "yes")
 
     if is_railway:
         log.info("🚂 Railway mode — polling loop active")
         alert = TelegramAlert()
         alert.send(
-            "🚀 Bot Started (Railway)!\n"
+            "🚀 Bot Started (Railway) v2!\n"
             "Pair: GBP/USD\n"
-            "SL: 13 pip | TP: 26 pip\n"
-            "Sessions: 06–08 / 07–13 / 15–19 / 19–23 SGT\n"
-            "Max 4 trades/day | News filter ON"
+            "SL: 20 pip | TP: 30 pip | RR: 1.5:1\n"
+            "Sessions: London 07-13 / NY 15-19 SGT\n"
+            "Max 1 trade/day | News filter ON\n"
+            "Strategy: EMA50/200 trend + RSI + EMA34 pullback"
         )
         STATE = load_state()
         while True:
@@ -220,7 +215,6 @@ def main():
             time.sleep(INTERVAL_MINUTES * 60)
 
     else:
-        # GitHub Actions mode — single shot
         log.info("⚡ GitHub Actions mode — single run")
         STATE = load_state()
         try:
