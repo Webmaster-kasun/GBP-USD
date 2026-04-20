@@ -1,15 +1,19 @@
-name: GBP/USD Scalp Bot - Cable Scalp
+name: GBP/USD Triple EMA Momentum Bot v3.1
 
 on:
   schedule:
-    - cron: "*/5 22-23 * * 0"   # Sunday 22:00-23:59 UTC = Mon 06:00-07:59 SGT (Asian Pre-London)
-    - cron: "*/5 * * * 1-4"     # Mon-Thu all day UTC (covers all 4 sessions)
-    - cron: "*/5 0-15 * * 5"    # Friday up to 15:00 UTC = 23:00 SGT (market close)
-  workflow_dispatch:             # Manual trigger anytime
+    # Every 5 minutes, Mon-Fri, full day UTC
+    # Focused on London Open window: 06:00-08:00 UTC
+    # But cron runs all day so state resets correctly at UTC midnight
+    - cron: "*/5 6-8 * * 1-5"    # Mon-Fri 06:00-08:59 UTC  (London Open — main entry window)
+    - cron: "0 0 * * 1-5"        # Mon-Fri 00:00 UTC         (daily state reset)
+
+  workflow_dispatch:              # Manual trigger anytime
 
 jobs:
   trade:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,7 +26,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Scalp Bot
+      - name: Restore bot state
+        uses: actions/cache@v4
+        with:
+          path: bot_state.json
+          key: bot-state-${{ github.run_number }}
+          restore-keys: |
+            bot-state-
+
+      - name: Run bot
         env:
           OANDA_API_KEY:    ${{ secrets.OANDA_API_KEY }}
           OANDA_ACCOUNT_ID: ${{ secrets.OANDA_ACCOUNT_ID }}
@@ -34,8 +46,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scalp-bot-logs-${{ github.run_number }}
+          name: bot-logs-${{ github.run_number }}
           path: |
             *.log
-            trades_*.json
-          retention-days: 30
+            bot_state.json
+          retention-days: 14
