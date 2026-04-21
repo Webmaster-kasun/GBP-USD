@@ -1,14 +1,10 @@
-name: GBP/USD Triple EMA Momentum Bot v3.1
+name: GBP/USD Triple EMA Momentum Bot — Demo
 
 on:
   schedule:
-    # Every 5 minutes, Mon-Fri, full day UTC
-    # Focused on London Open window: 06:00-08:00 UTC
-    # But cron runs all day so state resets correctly at UTC midnight
-    - cron: "*/5 6-8 * * 1-5"    # Mon-Fri 06:00-08:59 UTC  (London Open — main entry window)
-    - cron: "0 0 * * 1-5"        # Mon-Fri 00:00 UTC         (daily state reset)
-
-  workflow_dispatch:              # Manual trigger anytime
+    - cron: "*/5 * * * 1-5"    # every 5 min, Mon-Fri, all day
+    - cron: "0 0 * * 1-5"      # daily state reset at 00:00 UTC
+  workflow_dispatch:            # manual trigger anytime
 
 jobs:
   trade:
