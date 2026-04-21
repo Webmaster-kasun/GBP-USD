@@ -36,12 +36,6 @@ def run_bot(state):
     asset_cfg  = ASSETS[instrument]
 
     now_utc = datetime.now(UTC)
-    utc_hour = now_utc.hour
-
-    # Only scan during London Open window: 06:00-08:00 UTC
-    if not (6 <= utc_hour < 8):
-        log.info(f'[{instrument}] Outside London Open window ({utc_hour:02d}:xx UTC) — skipping')
-        return
 
     # Max 1 trade per day
     if state.get('trades', 0) >= asset_cfg['max_trades']:

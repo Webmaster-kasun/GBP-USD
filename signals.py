@@ -91,8 +91,8 @@ def get_signal(df_h1, df_m15,
         return None
     if not check_atr(df_m15):
         return None
-    if not check_london_open(df_m15):
-        return None
+    # Time window check disabled for demo — strategy runs any time
+    # check_london_open(df_m15) — re-enable for live trading
 
     direction = check_trend(df_h1)
     if direction is None:
