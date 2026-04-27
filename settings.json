@@ -1,0 +1,19 @@
+{
+  "max_trades_day": 6,
+  "signal_threshold": 5,
+  "signal_threshold_asian": 4,
+  "demo_mode": true,
+  "trade_gold": true,
+  "trade_gold_asian": true,
+  "max_consec_losses": 3,
+  "max_spread_gold": 50,
+  "max_spread_gold_asian": 80,
+  "strategy": "betax_supply_demand_zone",
+  "max_trades_asian": 2,
+  "max_trades_main": 4,
+  "tp1_be_move": true,
+  "monthly_target_sgd": 1000,
+  "fixed_units": 47,
+  "risk_usd_per_trade": 32.51,
+  "risk_sgd_per_trade": 43.89
+}
