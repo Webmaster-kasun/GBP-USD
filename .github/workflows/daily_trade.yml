@@ -1,49 +1,44 @@
-name: GBP/USD Triple EMA Momentum Bot — Demo
+name: OANDA Gold CPR Bot
 
 on:
-  schedule:
-    - cron: "*/5 * * * 1-5"    # every 5 min, Mon-Fri, all day
-    - cron: "0 0 * * 1-5"      # daily state reset at 00:00 UTC
-  workflow_dispatch:            # manual trigger anytime
+  workflow_dispatch:  # Manual trigger only — Railway handles automatic scanning
+
+# FIX 9: Removed cron schedule.
+# Railway runs bot.py continuously with its own 5-min loop.
+# Cron here caused 4-6 duplicate bots running simultaneously,
+# all hitting OANDA API and causing rate limit / key revocation.
 
 jobs:
   trade:
     runs-on: ubuntu-latest
-
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.4.0
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore bot state
-        uses: actions/cache@v4
-        with:
-          path: bot_state.json
-          key: bot-state-${{ github.run_number }}
-          restore-keys: |
-            bot-state-
-
-      - name: Run bot
+      - name: Run Gold CPR Bot (single scan)
         env:
           OANDA_API_KEY:    ${{ secrets.OANDA_API_KEY }}
           OANDA_ACCOUNT_ID: ${{ secrets.OANDA_ACCOUNT_ID }}
           TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+        run: python bot.py
 
       - name: Save logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
-          name: bot-logs-${{ github.run_number }}
+          name: gold-logs-${{ github.run_number }}
           path: |
-            *.log
-            bot_state.json
-          retention-days: 14
+            trades_*.json
+            performance_log.txt
+          retention-days: 7
