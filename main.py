@@ -1,6 +1,5 @@
 """
-main.py — Multi-Pair Bot Entry Point
-======================================
+main.py — Multi-Pair Bot Entry Point (v3.2)
 
 Pairs:    GBP/USD | EUR/USD | AUD/USD
 Platform: Railway (polling) or GitHub Actions (single-shot)
@@ -65,11 +64,11 @@ def run_once(state: dict) -> dict:
 
     # Daily reset at SGT midnight
     if state.get("date") != today:
-        # Send daily summary for previous day
+        # Daily summary for previous day
         if state.get("date"):
             try:
-                trader  = OandaTrader(demo=True)
-                bal     = trader.get_balance() if trader.login() else 0.0
+                trader = OandaTrader(demo=True)
+                bal    = trader.get_balance() if trader.login() else 0.0
                 alert.send_daily_summary(
                     balance       = bal,
                     start_balance = state.get("start_balance", 0),
@@ -102,8 +101,9 @@ def main():
     global STATE
 
     log.info("=" * 55)
-    log.info("🚀 Multi-Pair Bot Started")
+    log.info("🚀 Multi-Pair Bot v3.2 Started")
     log.info("Pairs: GBP/USD | EUR/USD | AUD/USD")
+    log.info("SL=15p | TP=25p | RR=1:1.67")
     log.info("Account: SGD | Platform: Railway / GitHub Actions")
     log.info("=" * 55)
 
