@@ -199,11 +199,11 @@ def validate_settings(settings: dict) -> dict:
     if missing:
         raise ValueError(f"Missing required settings keys: {missing}")
 
-    settings.setdefault("signal_threshold",           5)    # GBP/USD: 5/6 required (was 4 for EUR)
+    settings.setdefault("signal_threshold",           4)    # GBP/USD: loosened for more trades
     # v2.0 score-based risk sizing. Legacy fields kept as fallback.
     settings.setdefault("position_full_usd",          40)  # fallback for score 6
     settings.setdefault("position_partial_usd",       30)  # fallback for score 5
-    settings.setdefault("score_risk_usd",             {"5": 30, "6": 40})  # GBP: no score-4 trade
+    settings.setdefault("score_risk_usd",             {"4": 20, "5": 30, "6": 40})  # score4=$20
     settings.setdefault("max_units",                  20000)
     settings.setdefault("account_balance_override",   0)
     settings.setdefault("enabled",                    True)
@@ -1023,7 +1023,7 @@ def _guard_phase(db, run_id, settings, alert, history, now_sgt, today, demo,
             _us_s  = int(settings.get("us_session_start_hour",     21))
             _us_e2 = int(settings.get("us_session_early_end_hour",  3))
             _tok_s = int(settings.get("tokyo_session_start_hour",   8))
-            _tok_e = int(settings.get("tokyo_session_end_hour",    15))
+            _tok_e = int(settings.get("tokyo_session_end_hour",    14)   # GBP: Tokyo ends 14:00 SGT)
             _hours_map = {
                 "US Window":     f"{_us_s:02d}:00–{_us_e2:02d}:59",
                 "London Window": f"{_lon_s:02d}:00–{_lon_e:02d}:59",
