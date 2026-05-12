@@ -178,10 +178,10 @@ def load_settings() -> dict:
     # minimum units after margin guard — reject micro-orders gracefully
     settings.setdefault('min_trade_units',           1000)
     settings.setdefault('max_units',                 20000)
-    settings.setdefault('score_risk_usd',             {'5': 30, '6': 40})  # GBP: no score-4 trade
+    settings.setdefault('score_risk_usd',             {'4': 20, '5': 30, '6': 40})  # score4=$20 smaller size
     settings.setdefault('position_partial_usd',       30)  # legacy fallback for score 5
     settings.setdefault('position_full_usd',          40)  # legacy fallback for score 6
-    settings.setdefault('telegram_min_score_alert',   5)   # GBP: suppress below score 5
+    settings.setdefault('telegram_min_score_alert',   4)   # GBP: show from score 4
     # GBP/USD fixed pip SL/TP — pip_value_usd static $10.00 (USD-quoted pair)
     settings.setdefault('pair_sl_tp', {
         'GBP_USD': {'sl_pips': 15, 'tp_pips': 25, 'pip_value_usd': 10.0, 'be_trigger_pips': 15},  # GBP v2.0

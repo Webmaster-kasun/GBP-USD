@@ -8,18 +8,18 @@
       "pip_size": 0.0001,
       "max_spread_pips": 2,
       "spread_limits": {
-        "Tokyo":  3,
+        "Tokyo": 3,
         "London": 2,
-        "US":     3
+        "US": 3
       },
       "max_concurrent_trades": 1
     }
   },
-
-  "signal_threshold": 5,
+  "signal_threshold": 4,
   "position_full_usd": 40,
   "position_partial_usd": 30,
   "score_risk_usd": {
+    "4": 20,
     "5": 30,
     "6": 40
   },
@@ -47,14 +47,14 @@
   "max_spread_pips": 2,
   "spread_limits": {
     "London": 2,
-    "US":     3,
-    "Tokyo":  3
+    "US": 3,
+    "Tokyo": 3
   },
   "session_only": true,
   "session_thresholds": {
-    "Tokyo":  5,
+    "Tokyo": 5,
     "London": 5,
-    "US":     5
+    "US": 5
   },
   "news_filter_enabled": true,
   "news_block_before_min": 30,
@@ -65,22 +65,19 @@
   "friday_cutoff_minute_sgt": 0,
   "account_balance_override": 0,
   "trading_day_start_hour_sgt": 8,
-
   "ema_fast_period": 13,
   "ema_slow_period": 34,
   "orb_formation_minutes": 30,
   "orb_fresh_minutes": 45,
   "orb_aging_minutes": 90,
   "exhaustion_atr_mult": 2.5,
-  "cpr_min_distance_pips": 10,
+  "cpr_min_distance_pips": 5,
   "atr_period": 14,
   "m5_candle_count": 60,
   "min_rr_ratio": 1.6,
-
   "h1_filter_enabled": true,
   "h1_filter_mode": "score_aware",
   "h1_ema_period": 21,
-
   "cycle_minutes": 5,
   "db_retention_days": 90,
   "db_cleanup_hour_sgt": 0,
@@ -90,7 +87,6 @@
   "calendar_prune_days_ahead": 21,
   "startup_dedup_seconds": 90,
   "calendar_fetch_interval_min": 60,
-
   "london_session_start_hour": 15,
   "london_session_end_hour": 20,
   "us_session_start_hour": 20,
@@ -100,7 +96,6 @@
   "dead_zone_end_hour": 7,
   "tokyo_session_start_hour": 8,
   "tokyo_session_end_hour": 14,
-
   "daily_report_hour_sgt": 7,
   "daily_report_minute_sgt": 50,
   "weekly_report_hour_sgt": 8,
@@ -109,10 +104,8 @@
   "monthly_report_minute_sgt": 0,
   "weekly_export_hour_sgt": 8,
   "weekly_export_minute_sgt": 5,
-
   "tp2_rr_reference": 3.0,
-  "telegram_min_score_alert": 5,
-
+  "telegram_min_score_alert": 4,
   "pair_sl_tp": {
     "GBP_USD": {
       "sl_pips": 15,
