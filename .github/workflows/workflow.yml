@@ -13,7 +13,7 @@
 #
 # Current live deployment: Railway  →  python scheduler.py
 
-name: Fiber Scalp (DISABLED — Railway is live deployment)
+name: Cable Scalp v2.0 (DISABLED — Railway is live deployment)
 
 on:
   workflow_dispatch:   # manual trigger only; schedule lines removed to prevent accidental runs
